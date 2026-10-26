@@ -8,6 +8,7 @@ Setup:
   1. Install the PVCAM SDK from the Teledyne Vision Solutions website.
   2. pip install PyVCAM
   3. pip install tifffile   (for saving)
+  (steps 2-3 are already done in the setup_env conda environment)
   4. Close the camera in any other software (PVCamTest, Micro-Manager...)
      before connecting from Python.
 
@@ -18,10 +19,12 @@ It stores the camera name, the exposure time, the timeout and the PyVCAM
 camera object (cam) inside the object.
 
   Camera.list_cameras()        names of the cameras connected to the PC
+                               (can be called while a camera is connected)
   connect()                    start PVCAM and open the camera
   is_connected()               return True if the camera is open
   set_exposure(ms)             exposure time used by default everywhere
-  set_roi(x, y, w, h)          acquire only a region of interest
+  set_roi(x, y, w, h)          acquire only a region of interest (full-sensor
+                               pixels; ValueError if it does not fit on the sensor)
   reset_roi()                  back to full frame (1200 x 1200), binning 1x1
   set_binning(n)               n x n binning
   snap()                       one image, 2D uint16 numpy array
@@ -67,6 +70,16 @@ Live acquisition
         image = cam.get_live_frame()
     cam.stop_live()
 
+The frame timeout is the exposure time + 5 s (TIMEOUT in camera.py).
+If every snap / live times out ("Frame timeout"), the camera's USB link is
+stuck (e.g. after a program holding the camera was killed): close the
+program, switch the camera off for 10 s and on again (or unplug / plug its USB
+cable), then reconnect. The error message says so too.
+
+Reading the temperature from the camera stops the PVCAM live acquisition
+(next get_live_frame: "Acquisition not active"). During the live,
+cam.temperature therefore returns the last value read before the live.
+
 
 Saving
 ------
@@ -110,13 +123,17 @@ With the SLM
             cam.save(images[-1], "D:/data", name=f"mask{i}",
                      extra_metadata={"slm_mask_index": i})
 
-The SLM needs a few ms to settle after show(): a short time.sleep() before
-snap() may be necessary.
+slm.show() waits slm.settle_time seconds (default 0.1 s) after displaying the
+mask, so snap() can be called right after it.
 
 
-Still to check (not run on the hardware yet)
---------------------------------------------
+Checked against PyVCAM 2.3.2 (installed in setup_env)
+-----------------------------------------------------
+  - cam.is_open, cam.temp, set_roi(x, y, w, h), get_frame/get_sequence(exp_time,
+    timeout_ms) exist as used here
+  - poll_frame() returns (frame, fps, frame_count), image in frame["pixel_data"]
+    (a single array with one ROI); the live reads the newest frame
+Still to check on the hardware:
   - exposure times are in ms (default PVCAM exposure resolution, cam.exp_res)
-  - cam.is_open exists in the installed PyVCAM version
-  - poll_frame() returns (frame, fps, frame_count) with the image in
-    frame["pixel_data"] (recent PyVCAM versions)
+  - get_sequence() starts/stops the camera for each frame: fine for a few
+    frames, slow for long fast sequences

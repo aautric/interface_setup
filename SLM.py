@@ -7,23 +7,26 @@ The SLM has two links to the PC:
 
 Python SDK (see EXULUS SDK Manual, chapter 3):
     C:/Program Files/Thorlabs/EXULUS/Help/SDK/Thorlabs_EXULUS_PythonSDK.zip
-Unzip it and set SDK_PATHS below to the folders containing the .py wrappers
-and their DLLs (each wrapper must stay in the same folder as its DLL).
+It is unzipped in Documents/Thorlabs_EXULUS_PythonSDK; SDK_PATHS below points to
+the folders containing the .py wrappers and their DLLs (each wrapper must stay in
+the same folder as its DLL).
 """
 
 import ctypes
 import os
 import sys
+import time
 
 import numpy as np
 from PIL import Image
 
-# Folders of the unzipped Python SDK: one for the control demo
-# (EXULUS_COMMAND_LIB.py + exulus_command_library.dll) and one for the display demo
-# (Thorlabs_EXULUS_CGHDisplay.py + its DLL). Adapt to your installation.
+# Folders of the unzipped Python SDK: one for the control
+# (EXULUS_COMMAND_LIB.py + exulus_command_library.dll) and one for the display
+# (Thorlabs_EXULUS_CGHDisplay.py + cgh_display.dll + glew32.dll). Adapt to your installation.
+SDK_FOLDER = os.path.join(os.path.expanduser("~"), "Documents", "Thorlabs_EXULUS_PythonSDK")
 SDK_PATHS = [
-    r"C:\Program Files\Thorlabs\EXULUS\Help\SDK\Thorlabs_EXULUS_PythonSDK\Thorlabs.EXULUS.Control",
-    r"C:\Program Files\Thorlabs\EXULUS\Help\SDK\Thorlabs_EXULUS_PythonSDK\Thorlabs.EXULUS.CGHDisplay",
+    os.path.join(SDK_FOLDER, "Thorlabs.EXULUS.Python.SDK"),
+    os.path.join(SDK_FOLDER, "Thorlabs.EXULUS.CGHDisplay"),
 ]
 for path in SDK_PATHS:
     if os.path.isdir(path):
@@ -37,13 +40,19 @@ try:
 except Exception as error:  # SDK missing: load_phase_pattern still usable
     SDK_ERROR = error
 
-BAUD_RATE = 38400  # not given in the SDK manual: check EXULUS_COMMAND_LIB_EXAMPLE.py
+BAUD_RATE = 38400  # value used in EXULUS_COMMAND_LIB_EXAMPLE.py
 TIMEOUT = 3        # seconds
+SETTLE_TIME = 0.1  # s waited after show() so the liquid crystal settles (to measure on the setup)
 
 ACK = 0x06  # answer of EXULUSCheckCommunication when the SLM is OK
 
-SLM_WIDTH = 1920   # EXULUS-HD2 resolution (pixels)
-SLM_HEIGHT = 1080
+# USB ids of the Silicon Labs CP210x bridge of the EXULUS-HD2. EXULUSListDevices sometimes
+# returns nothing (the "unplug / plug again" state), but EXULUSOpen accepts the COM port.
+CP210X_VID = 0x10C4
+CP210X_PID = 0xEA60
+
+SLM_WIDTH = 1920   # EXULUS-HD2 resolution (pixels), 8 µm pitch
+SLM_HEIGHT = 1200
 
 
 class SLM:
@@ -56,15 +65,19 @@ class SLM:
     """
 
     def __init__(self, serial_number=None, monitor=None,
-                 baud_rate=BAUD_RATE, timeout=TIMEOUT):
+                 baud_rate=BAUD_RATE, timeout=TIMEOUT, settle_time=SETTLE_TIME):
         """
-        serial_number: serial number of the SLM; if None, the first EXULUS found is used.
+        serial_number: serial number or COM port (e.g. "COM4") of the SLM;
+                       if None, the first EXULUS found is used.
         monitor: monitor id of the SLM (from 1 to monitor count); if None the last one is used.
+        settle_time: seconds waited at the end of show(), so that the mask is stable
+                     before a camera acquisition (0 = no wait).
         """
         self.serial_number = serial_number
         self.monitor = monitor
         self.baud_rate = baud_rate
         self.timeout = timeout
+        self.settle_time = settle_time
         self.width = SLM_WIDTH
         self.height = SLM_HEIGHT
         self.hdl = None     # USB connection handle
@@ -74,13 +87,13 @@ class SLM:
         """Find the SLM, open the USB connection and check that the SLM answers."""
         if SDK_ERROR is not None:
             raise RuntimeError(f"EXULUS SDK not loaded ({SDK_ERROR}). Check SDK_PATHS in SLM.py.")
-        devices = EXULUSListDevices()  # list of [serialNumber, EXULUSType]
-        if not devices:
-            raise RuntimeError("No EXULUS SLM found. Check USB cable and power.")
-        print("EXULUS devices found:", devices)
-
         if self.serial_number is None:
-            self.serial_number = devices[0][0]
+            devices = EXULUSListDevices()  # list of [serialNumber, EXULUSType]
+            if devices:
+                print("EXULUS devices found:", devices)
+                self.serial_number = devices[0][0]
+            else:
+                self.serial_number = find_exulus_port()
 
         if EXULUSIsOpen(self.serial_number) == 1:
             print(f"SLM {self.serial_number} is already open, closing it first is recommended.")
@@ -116,12 +129,15 @@ class SLM:
         if window < 0:
             raise RuntimeError(f"Could not create display window on monitor {self.monitor} "
                                f"(error code {window}).")
-        CghDisplaySetWindowInfo(window, self.width, self.height, 1)  # 1: gray scale
         self.window = window
+        result = CghDisplaySetWindowInfo(window, self.width, self.height, 1)  # 1: gray scale
+        if result < 0:
+            raise RuntimeError(f"Could not set the display window info (error code {result}).")
 
     def show(self, source):
         """
-        Load a phase pattern (gray levels 0-255) and display it on the SLM.
+        Load a phase pattern (gray levels 0-255), display it on the SLM and wait
+        settle_time seconds.
 
         source: path to an image or .npy file, or a 2D numpy array (see load_phase_pattern).
         """
@@ -131,8 +147,10 @@ class SLM:
 
         buffer = pattern.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte))
         result = CghDisplayShowWindow(self.window, buffer)
-        if result != 0:
+        if result < 0:  # negative = failure, as in Thorlabs_EXULUS_CGHDisplay_Example.py
             raise RuntimeError(f"Could not display the pattern (error code {result}).")
+        if self.settle_time:
+            time.sleep(self.settle_time)
 
     def close(self):
         """Close the display window and the USB connection."""
@@ -149,6 +167,19 @@ class SLM:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def find_exulus_port():
+    """Return the COM port of the EXULUS USB link (Silicon Labs CP210x bridge)."""
+    from serial.tools import list_ports
+    ports = [p.device for p in list_ports.comports()
+             if p.vid == CP210X_VID and p.pid == CP210X_PID]
+    if not ports:
+        raise RuntimeError("No EXULUS SLM found. Check USB cable and power "
+                           "(unplugging and plugging the USB cable again may help).")
+    if len(ports) > 1:
+        print(f"Several CP210x ports {ports}, using {ports[0]} (give SLM(serial_number='COMx')).")
+    return ports[0]
 
 
 def load_phase_pattern(source, width=SLM_WIDTH, height=SLM_HEIGHT):

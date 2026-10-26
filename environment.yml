@@ -1,0 +1,32 @@
+# Python environment for the control of the setup (SLM, cameras, microscope).
+#   conda env create -f environment.yml
+#   conda activate setup_env
+# Also needed on the PC (not pip/conda packages):
+#   - PVCAM (Teledyne) for the Prime 95B
+#   - DCAM-API (Hamamatsu) for the Orca Flash 4
+#   - Thorlabs EXULUS Python SDK unzipped in Documents/Thorlabs_EXULUS_PythonSDK (see SLM.py)
+#   - Micro-Manager 2.0 (device interface 70) and the Nikon Ti SDK for the microscope
+#   - Thorlabs Kinesis 64-bit for the objective piezo (PPC001)
+# Python 3.11 and numpy < 2: pymmcore 10.1.1.70.x (matching the installed Micro-Manager)
+# has no wheel for Python 3.12 and is built against numpy 1.
+name: setup_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy<2
+  - pillow
+  - tifffile
+  - pyqt=5
+  - pyqtgraph
+  - pyserial
+  - scipy        # scipy, pandas, numba: dependencies of pylablib, taken from conda
+  - pandas       # so that they stay compatible with numpy < 2
+  - numba
+  - ipykernel
+  - pip
+  - pip:
+      - numpy<2
+      - PyVCAM==2.3.2
+      - pymmcore==10.1.1.70.6
+      - pylablib==1.4.5

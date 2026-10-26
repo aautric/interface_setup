@@ -1,80 +1,127 @@
-setup_gui.py - user interface for the SLM and the camera
-=========================================================
+setup_gui.py - user interface of the setup
+==========================================
 
-One window with the SLM (Thorlabs EXULUS-HD2) on the left and the camera
-(Teledyne Photometrics Prime 95B) on the right. It uses the classes of
-SLM.py and camera.py (see SLM_README.txt and camera_README.txt).
-Screenshot: setup_gui_screenshot.png
+One window with a panel for each device:
+  SLM               Thorlabs EXULUS-HD2              (SLM.py, SLM_README.txt)
+  Prime 95B         Teledyne Photometrics camera     (camera.py, camera_README.txt)
+  Orca Flash4       Hamamatsu ORCA-Flash4.0 V2       (orca.py, orca_README.txt)
+  Microscope        Nikon Eclipse Ti-E               (nikon_ti.py, nikon_ti_README.txt)
+  Objective piezo   Thorlabs PPC001, objective Z     (piezo.py, piezo_README.txt)
 
-Setup:
-  1. Requirements of SLM.py and camera.py (Thorlabs SDK, PVCAM, PyVCAM,
-     numpy, pillow, tifffile)
-  2. pip install PyQt5 pyqtgraph
 Run:
-  python setup_gui.py
+  - double-click "Bumblebee" on the desktop (shortcut to run_setup_gui.bat,
+    which activates setup_env and starts the GUI; its console window stays
+    minimized and stays open if the GUI stops with an error), or
+  - Anaconda Prompt:  conda activate setup_env
+                      python setup_gui.py
 
-The window also opens without the Thorlabs SDK or PyVCAM: the missing
-device cannot be connected, but masks can still be loaded and previewed.
+A panel whose library is missing shows "Not available: ..." and the others
+still work. Each device is connected with its own Connect button.
 
 
-SLM panel (left)
-----------------
-  Connect / Disconnect       USB connection, serial number shown when connected
+Arranging the panels
+--------------------
+Each panel is a dock window:
+  - toolbar buttons (or View menu)  show / hide a panel
+  - drag a panel's title bar        move it: next to another panel, or on top
+                                    of it to make tabs
+  - double-click the title bar      take it out as a separate window, e.g. to
+    (or drag it out)                put it on another screen; it can then be
+                                    minimized / maximized like any window
+  - View > Dock all panels          put the separate windows back
+  - View > Reset layout             back to the default arrangement
+The arrangement (including separate windows and their screens) is saved when
+the main window is closed and restored at the next start.
+Default: SLM top left, microscope and piezo below it, the two cameras tabbed
+on the right.
+
+
+SLM panel
+---------
   Load image / .npy...       choose a mask file (.png .bmp .tif .npy); it is
-                             checked (1080 x 1920, values 0-255) and previewed
+                             checked (1200 x 1920, values 0-255) and previewed
   Send to SLM                display the previewed mask on the SLM (HDMI)
   Blank (0)                  load an all-zero mask
   Send automatically...      if ticked, a loaded mask is sent immediately
 
-The line under the preview gives the mask name and its min / max values.
 
-
-Camera panel (right)
---------------------
-  Connect / Disconnect       open / close the camera; sensor temperature shown
-                             top right, refreshed every 2 s
-  Display                    last image, with contrast histogram on the right
-                             (drag the yellow handles to change the contrast)
-  Snap                       acquire one image
-  Start / Stop live          continuous acquisition
+Camera panels (Prime 95B, Orca Flash4)
+--------------------------------------
+  Display                    last image, contrast histogram on the right
+  Snap / Start-Stop live     one image / continuous acquisition
   Auto contrast              adjust the contrast on every new image
-  (stats)                    image size, min, max and mean
-
-  Settings
+  top right                  Prime: sensor temperature (not updated during the
+                             live: reading it would stop the live); Orca:
+                             cooler status
+  Settings tab
     Exposure                 in ms, applied when you leave the field (Enter/Tab)
-    Binning                  1, 2 or 4, applied immediately
-    Readout port/speed/gain  indexes of the PVCAM speed table, "Apply readout"
-    ROI x, y, w, h           "Apply ROI"; "Full frame" goes back to 1200 x 1200
-                             and binning 1
-  If the live is running it is paused while a setting is changed, then restarted.
+    Binning                  applied immediately
+    Readout                  Prime: port / speed / gain indexes + Apply readout
+                             Orca: fast (standard) / slow (low noise)
+    ROI x, y, w, h           Apply ROI; Full frame goes back to the full sensor
+                             and binning 1 (the Orca rounds the ROI to 4 px)
+    Select on image          shows a yellow rectangle on the image: move it,
+                             resize it with its corner handle; x, y, w, h follow
+                             (in full-sensor pixels, also on an image already
+                             cropped / binned); then Apply ROI
+    Prime readout            valid combinations (PVCAM table): port 0,
+                             speed 0 with gain 1 (full well) / 2 (balanced) /
+                             3 (sensitivity), or speed 1 with gain 1 (HDR, 16 bit)
+  Saving tab
+    Folder, Name, Frames     destination, base name, number of frames
+    Save last image / Acquire and save sequence
+  If the live is running it is paused while a setting is changed or a
+  sequence is acquired, then restarted.
 
-  Saving
-    Folder, Name             destination folder ("..." to browse) and base name
-    Frames                   number of frames for a sequence
-    Save last image          save the last snapped image
-    Acquire and save sequence
-                             acquire "Frames" images and save them in one TIFF
-  Files: <name>_<date>_<time>.tif + .json, as in camera.py. The metadata also
-  contains "slm_mask": the name of the mask displayed on the SLM at that time
-  (null if nothing was sent).
+Files: <name>_<date>_<time>.tif + .json (saving.py). Besides the camera
+settings, the metadata contains the state of the other devices at saving time:
+  slm_mask              name of the mask shown on the SLM (null if none)
+  microscope_...        objective, light path, z, xy, Perfect Focus
+  piezo_...             loop mode, voltage, position
+(only for the devices connected in the GUI)
 
-Closing the window disconnects both devices.
+
+Microscope panel
+----------------
+  Objective                  displayed only: it is never changed from software
+  Light path                 Eye / Left / Right / Left80
+  Focus                      Z - / Z + by Step (max 100 µm); Go to an absolute
+                             position (asks for confirmation beyond 100 µm)
+  Stage                      X - / X + / Y + / Y - by Step
+  Perfect Focus              On / status / offset
+The positions are read every 0.5 s.
+
+
+Objective piezo panel
+---------------------
+  State                      loop mode, output voltage, position from the sensor
+  Mode                       open loop: Target and Step in V
+                             closed loop: Target and Step in µm, 0 to 450 µm
+                             (the sensor reads about -16 µm at 0 V: go to a
+                             positive position first); switching keeps the
+                             position
+  Go to / - / +              moves, each waits until the position / voltage is
+                             reached; a move larger than about 20 µm asks for
+                             confirmation
 
 
 Code structure
 --------------
-  SLMPanel      widgets and actions of the SLM part (holds an SLM object)
-  CameraPanel   widgets and actions of the camera part (holds a Camera object)
-  MainWindow    puts both panels side by side, gives the SLM mask name to the
-                camera metadata, closes the devices when the window is closed
-A new device = a new panel class holding the device object, added to MainWindow.
+  DevicePanel     common part: Connect button, status, widgets enabled when
+                  connected, get_metadata()
+  SLMPanel, PrimePanel / OrcaPanel (CameraPanel), NikonPanel, PiezoPanel
+  MainWindow      dock windows, toolbar, layout saving, metadata of the other
+                  devices for the camera files, closes all devices on exit
+A new device = a new DevicePanel subclass, added in MainWindow.__init__.
 
 
-Known limits (first version, not run on the hardware yet)
----------------------------------------------------------
-  - The live reads the frames in the main thread: with long exposures
-    (several hundred ms) the window reacts slowly. Fix: acquisition in a
-    QThread.
-  - Readout port/speed/gain are free indexes (0-10): the valid combinations
-    of the Prime 95B are in its PVCAM speed table (visible in PVCamTest).
-  - Tested only with fake SLM / camera libraries.
+Known limits
+------------
+  - The lives read the frames in the main thread: with long exposures, or both
+    cameras in live, the window reacts slowly. Fix: acquisition in a QThread.
+  - Prime readout port/speed/gain are free indexes (0-10): the valid
+    combinations are in its PVCAM speed table (visible in PVCamTest).
+  - Checked on the hardware: connection, reading, snap, live, save with
+    metadata, piezo moves (open and closed loop). The move buttons of the
+    microscope are not tested yet from the GUI (the same moves work in
+    nikon_ti.py).
