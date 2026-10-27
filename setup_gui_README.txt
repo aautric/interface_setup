@@ -97,9 +97,12 @@ settings, the metadata contains the state of the other devices at saving time:
 Microscope panel
 ----------------
   Objective                  displayed only: it is never changed from software
-  Light path                 Eye / Left / Right / Left80
+                             (name corrected by OBJECTIVE_LABELS in nikon_ti.py)
+  Light path                 Eye / Left / Right / Left80, ~3 s per change; the
+                             box is red when the light goes left, green when it
+                             goes right (LIGHT_PATH_COLORS in setup_gui.py)
   Cube (set by hand)         the turret is not motorised: choose the cube in
-                             place (FILTER_CUBES in nikon_ti.py); remembered
+                             place (FILTER_CUBES in nikon_ti.py, default cube 2); remembered
                              between sessions, saved with the images even if
                              the microscope is not connected
   Focus                      Z - / Z + by Step (max 100 µm); Go to an absolute

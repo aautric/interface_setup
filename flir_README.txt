@@ -59,5 +59,10 @@ Checked on the camera (2026-10-27)
   - snap (12 bit, gain 0, gamma off), ROI, binning 2 with ROI, full frame,
     sequence of 10, live, save with metadata, gain change: all work, also
     from the GUI with the microscope connected at the same time
-  - speed ~3 frames/s at full frame: the camera seems to be on a USB 2
-    port -> to move to a USB 3 port
+  - USB: through a USB 2.0 hub (chip 1A40:0101) it gave only ~3 frames/s;
+    moved to USB 3 (SuperSpeed) on 2026-10-27: live 26 frames/s at full frame
+    in 12 bit (camera maximum), sequences 13 frames/s (12 bit) / 19 frames/s
+    (8 bit), 130 MB/s. Keep it on a USB 3 port.
+  - GUI live: get_live_frame(wait=False) returns None when no new frame has
+    arrived, so the window is not blocked between two frames (it was blocked
+    ~230 ms per refresh at 4 fps)

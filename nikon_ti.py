@@ -30,6 +30,14 @@ FILTER_CUBES = [
     "1 - original cube",
     "2 - dichroic 3 mm Di03-R405/488/561/635-t3-25x36",
 ]
+DEFAULT_FILTER_CUBE = FILTER_CUBES[1]
+
+# Corrections of the objective names stored in the Ti (nosepiece position -> name), when
+# they are out of date. Position 3 is reported "Unknown" but holds the 100x oil objective
+# (user, 2026-10-27).
+OBJECTIVE_LABELS = {
+    3: "3-Apo TIRF 100x NA 1.49 Oil",
+}
 
 
 class NikonTi:
@@ -81,12 +89,14 @@ class NikonTi:
 
     @property
     def objectives(self):
-        """Labels of the nosepiece positions, e.g. '2-Plan Fluor 60x NA 1.25 Oil'."""
-        return list(self.core.getStateLabels(NOSEPIECE))
+        """Names of the nosepiece positions, e.g. '2-Plan Fluor 60x NA 1.25 Oil'
+        (with the corrections of OBJECTIVE_LABELS)."""
+        labels = self.core.getStateLabels(NOSEPIECE)
+        return [OBJECTIVE_LABELS.get(i + 1, label) for i, label in enumerate(labels)]
 
     def get_objective(self):
-        """Label of the objective in place."""
-        return self.core.getStateLabel(NOSEPIECE)
+        """Name of the objective in place (with the corrections of OBJECTIVE_LABELS)."""
+        return self.objectives[self.core.getState(NOSEPIECE)]
 
     def set_objective(self, objective):
         """

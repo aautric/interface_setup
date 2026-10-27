@@ -32,8 +32,8 @@ DEFAULT_SETTINGS = [
     ("Gain Auto", "Off"),
     ("Gain", "0"),
     ("Gamma Enabled", "0"),
+    ("Pixel Format", "Mono16"),  # before the ADC: 12 bit is refused while in Mono8
     ("ADC Bit Depth", "Bit12"),
-    ("Pixel Format", "Mono16"),
 ]
 
 
@@ -191,8 +191,14 @@ class Flir:
         self.core.startContinuousSequenceAcquisition(0)
         self.live = True
 
-    def get_live_frame(self):
-        """Return the latest image of the live acquisition as a 2D numpy array."""
+    def get_live_frame(self, wait=True):
+        """
+        Return the latest image of the live acquisition as a 2D numpy array.
+        wait=False: return None at once if no new image has arrived (used by the GUI, so
+        that the window is not blocked between two frames).
+        """
+        if not wait and self.core.getRemainingImageCount() == 0:
+            return None
         self._wait_for_image(self.exposure_time)
         image = self.core.getLastImage()
         self.core.clearCircularBuffer()  # only the newest frame is kept

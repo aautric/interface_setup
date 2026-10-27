@@ -43,6 +43,9 @@ Orca, ORCA_ERROR = optional_import("orca", "Orca")
 Flir, FLIR_ERROR = optional_import("flir", "Flir")
 NikonTi, NIKON_ERROR = optional_import("nikon_ti", "NikonTi")
 FILTER_CUBES = optional_import("nikon_ti", "FILTER_CUBES")[0] or []
+DEFAULT_FILTER_CUBE = optional_import("nikon_ti", "DEFAULT_FILTER_CUBE")[0] or "unknown"
+# colour of the light path box: where the light goes (side of the microscope)
+LIGHT_PATH_COLORS = {"Left": "#d32f2f", "Right": "#388e3c"}  # red, green
 Piezo, PIEZO_ERROR = optional_import("piezo", "Piezo")
 FilterWheel, FILTER_WHEEL_ERROR = optional_import("filter_wheel", "FilterWheel")
 
@@ -54,6 +57,7 @@ POSITION_PERIOD = 500      # ms between two readings of the microscope / piezo s
 MAX_Z_JUMP = 100           # µm, larger focus moves ask for a confirmation
 MAX_PIEZO_JUMP = 20        # µm, larger piezo moves ask for a confirmation
 MIN_VIEW_SIZE = 300        # px, minimum size of the image displays
+AUTO_LEVELS_PERCENTILES = (0.5, 99.5)  # auto contrast range, ignoring hot / dead pixels
 # window and taskbar icon (kept outside the repository); default Qt icon if missing
 ICON_PATH = os.path.join(os.path.expanduser("~"), "Pictures", "bumblebee.ico")
 
@@ -65,6 +69,24 @@ def make_image_view():
     view.ui.menuBtn.hide()
     view.setMinimumSize(MIN_VIEW_SIZE, MIN_VIEW_SIZE)
     return view
+
+
+def auto_levels(frame, low=AUTO_LEVELS_PERCENTILES[0], high=AUTO_LEVELS_PERCENTILES[1]):
+    """
+    Display levels between two percentiles of the image (on a subsample, for speed), so that
+    a few hot pixels do not squeeze the rest of the image into black (as min / max would).
+    """
+    step = max(1, int(np.sqrt(frame.size / 250_000)))
+    lo, hi = np.percentile(frame[::step, ::step], (low, high))
+    return (lo, hi) if hi > lo else (lo, lo + 1)
+
+
+def light_path_color(path):
+    """Colour of a light path ('2-Left100' -> red, '3-Right100' -> green), or None (eyepieces)."""
+    for side, color in LIGHT_PATH_COLORS.items():
+        if side.lower() in path.lower():
+            return color
+    return None
 
 
 def show_error(parent, error):
@@ -405,11 +427,12 @@ class CameraPanel(DevicePanel):
     # ---------- display ----------
 
     def display(self, image):
+        frame = image if image.ndim == 2 else image[-1]
         auto = self.auto_levels.isChecked() or self.first_display
-        self.view.setImage(image, autoLevels=auto, autoRange=self.first_display,
+        levels = auto_levels(frame) if auto else None
+        self.view.setImage(image, autoLevels=False, levels=levels, autoRange=self.first_display,
                            autoHistogramRange=auto)
         self.first_display = False
-        frame = image if image.ndim == 2 else image[-1]
         self.stats_label.setText(f"{frame.shape[1]}x{frame.shape[0]}  min {frame.min()}  "
                                  f"max {frame.max()}  mean {frame.mean():.1f}")
 
@@ -456,10 +479,16 @@ class CameraPanel(DevicePanel):
 
     def update_live(self):
         try:
-            self.display(self.device.get_live_frame())
+            frame = self.read_live_frame()
+            if frame is not None:  # None: no new frame yet
+                self.display(frame)
         except Exception as error:
             self.stop_live()
             show_error(self, error)
+
+    def read_live_frame(self):
+        """Latest live frame (waits for it), or None if not available yet."""
+        return self.device.get_live_frame()
 
     # ---------- settings ----------
 
@@ -644,6 +673,9 @@ class FlirPanel(CameraPanel):
     def temperature_text(self):
         return ""  # not available for this camera
 
+    def read_live_frame(self):
+        return self.device.get_live_frame(wait=False)  # do not block the window
+
 
 # ---------------------------------------------------------------- microscope
 
@@ -669,7 +701,7 @@ class NikonPanel(DevicePanel):
         self.cube.setToolTip("Cube in the turret, chosen by hand (the turret is not motorised). "
                              "Saved with the images.")
         self.settings = QtCore.QSettings("interface_setup", "setup_gui")
-        self.cube.setCurrentText(self.settings.value("filter_cube", "unknown"))
+        self.cube.setCurrentText(self.settings.value("filter_cube", DEFAULT_FILTER_CUBE))
         self.cube.currentTextChanged.connect(lambda text: self.settings.setValue("filter_cube", text))
 
         # focus
@@ -759,6 +791,11 @@ class NikonPanel(DevicePanel):
         ti = self.device
         self.light_path.clear()
         self.light_path.addItems(ti.light_paths)
+        for index, path in enumerate(ti.light_paths):  # colour the items of the list too
+            color = light_path_color(path)
+            if color:
+                self.light_path.setItemData(index, QtGui.QColor(color), QtCore.Qt.BackgroundRole)
+                self.light_path.setItemData(index, QtGui.QColor("white"), QtCore.Qt.ForegroundRole)
         self.focus_box.setVisible(ti.has("TIZDrive"))
         self.stage_box.setVisible(ti.has("TIXYDrive"))
         self.pfs_box.setVisible(ti.has("TIPFSStatus"))
@@ -772,7 +809,12 @@ class NikonPanel(DevicePanel):
         ti = self.device
         try:
             self.objective_label.setText(ti.get_objective())
-            self.light_path.setCurrentText(ti.get_light_path())
+            path = ti.get_light_path()
+            self.light_path.setCurrentText(path)
+            color = light_path_color(path)
+            self.light_path.setStyleSheet(
+                f"QComboBox {{ background-color: {color}; color: white; font-weight: bold; }}"
+                if color else "")
             if ti.has("TIZDrive"):
                 self.z_label.setText(f"{ti.get_z():.3f} µm")
             if ti.has("TIXYDrive"):

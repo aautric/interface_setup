@@ -26,7 +26,14 @@ connect() loads the devices the microscope reports. On this Ti:
 The filter cube turret is not motorised (no TIFilterBlock device): the cubes
 are listed in FILTER_CUBES (1 original cube, 2 dichroic 3 mm
 Di03-R405/488/561/635-t3-25x36) and the one in place is chosen by hand in the
-GUI.
+GUI (default DEFAULT_FILTER_CUBE = cube 2).
+
+Objective names: the Ti stores a name per nosepiece position (set in Nikon's
+software). Position 3 holds the 100x NA 1.49 oil objective but is stored as
+"Unknown": OBJECTIVE_LABELS in nikon_ti.py corrects the name shown and saved
+("3-Apo TIRF 100x NA 1.49 Oil"). This does not change the microscope's own
+table: the Perfect Focus answers "Unsupported objective lens" until the
+objective is registered at position 3 in NIS-Elements / TiControl.
 
   connect() / close()          load / release the microscope (it keeps its state)
   objectives, get_objective(), set_objective(x)
