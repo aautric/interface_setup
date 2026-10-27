@@ -7,6 +7,8 @@
 #   - Thorlabs EXULUS Python SDK unzipped in Documents/Thorlabs_EXULUS_PythonSDK (see SLM.py)
 #   - Micro-Manager 2.0 (device interface 70) and the Nikon Ti SDK for the microscope
 #   - Thorlabs Kinesis 64-bit for the objective piezo (PPC001)
+#   - Sutter SI Unified Lambda USB driver (VCP mode) for the Lambda 10-3
+#   - FLIR Spinnaker SDK (2.3) for the Blackfly S, used through Micro-Manager
 # Python 3.11 and numpy < 2: pymmcore 10.1.1.70.x (matching the installed Micro-Manager)
 # has no wheel for Python 3.12 and is built against numpy 1.
 name: setup_env

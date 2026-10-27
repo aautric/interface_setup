@@ -1,9 +1,11 @@
 """
 User interface of the setup:
     - SLM (Thorlabs EXULUS-HD2): load / preview / send phase masks
-    - Prime 95B and Orca Flash4.0 cameras: live, snap, settings, saving with metadata
+    - Prime 95B, Orca Flash4.0 and FLIR Blackfly S cameras: live, snap, settings, saving
+      with metadata
     - Nikon Ti microscope: light path, focus, XY stage, Perfect Focus (objective only displayed)
     - Objective piezo (Thorlabs PPC001): open loop (V) or closed loop (µm)
+    - Filter wheels and shutters (Sutter Lambda 10-3)
 
 Each device has its own panel, in a dock window that can be:
     - hidden / shown with the toolbar buttons (or the View menu),
@@ -38,8 +40,11 @@ def optional_import(module, name):
 
 Camera, CAMERA_ERROR = optional_import("camera", "Camera")
 Orca, ORCA_ERROR = optional_import("orca", "Orca")
+Flir, FLIR_ERROR = optional_import("flir", "Flir")
 NikonTi, NIKON_ERROR = optional_import("nikon_ti", "NikonTi")
+FILTER_CUBES = optional_import("nikon_ti", "FILTER_CUBES")[0] or []
 Piezo, PIEZO_ERROR = optional_import("piezo", "Piezo")
+FilterWheel, FILTER_WHEEL_ERROR = optional_import("filter_wheel", "FilterWheel")
 
 pg.setConfigOptions(imageAxisOrder="row-major")  # numpy arrays are (y, x)
 
@@ -613,6 +618,33 @@ class OrcaPanel(CameraPanel):
         return f"Cooler: {self.device.cooler_status}"  # the Flash4.0 V2 gives no temperature
 
 
+class FlirPanel(CameraPanel):
+    """FLIR Blackfly S BFS-U3-51S5M (flir.py)."""
+
+    device_class = Flir
+    import_error = FLIR_ERROR
+    sensor_size = 2448
+    binnings = ("1", "2")
+    file_name = "flir"
+
+    def make_readout_row(self):
+        self.gain = spin_box(0, 47.9, 0, " dB", decimals=1)
+        self.gain.setToolTip("Fixed gain (automatic gain is switched off at connection)")
+        self.gain.editingFinished.connect(self.apply_readout)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("gain"))
+        row.addWidget(self.gain)
+        row.addStretch()
+        return row, [self.gain]
+
+    def apply_readout(self):
+        if self.device is not None:
+            self.apply_setting(self.device.set_gain, self.gain.value())
+
+    def temperature_text(self):
+        return ""  # not available for this camera
+
+
 # ---------------------------------------------------------------- microscope
 
 
@@ -632,6 +664,13 @@ class NikonPanel(DevicePanel):
         self.objective_label = QtWidgets.QLabel("-")
         self.objective_label.setToolTip("The objective is never changed from this program.")
         self.light_path = QtWidgets.QComboBox()
+        self.cube = QtWidgets.QComboBox()  # turret not motorised: set by hand, remembered
+        self.cube.addItems(["unknown", *FILTER_CUBES])
+        self.cube.setToolTip("Cube in the turret, chosen by hand (the turret is not motorised). "
+                             "Saved with the images.")
+        self.settings = QtCore.QSettings("interface_setup", "setup_gui")
+        self.cube.setCurrentText(self.settings.value("filter_cube", "unknown"))
+        self.cube.currentTextChanged.connect(lambda text: self.settings.setValue("filter_cube", text))
 
         # focus
         self.z_label = QtWidgets.QLabel("-")
@@ -657,6 +696,7 @@ class NikonPanel(DevicePanel):
         optics_form = QtWidgets.QFormLayout(optics)
         optics_form.addRow("Objective", self.objective_label)
         optics_form.addRow("Light path", self.light_path)
+        optics_form.addRow("Cube (set by hand)", self.cube)
 
         self.focus_box = QtWidgets.QGroupBox("Focus")
         focus_form = QtWidgets.QFormLayout(self.focus_box)
@@ -764,9 +804,11 @@ class NikonPanel(DevicePanel):
         super().close_device()
 
     def get_metadata(self):
-        if self.device is None:
-            return {}
-        return {f"microscope_{key}": value for key, value in self.device.get_metadata().items()}
+        metadata = {"microscope_filter_cube": self.cube.currentText()}  # even if not connected
+        if self.device is not None:
+            metadata.update({f"microscope_{key}": value
+                             for key, value in self.device.get_metadata().items()})
+        return metadata
 
 
 # ---------------------------------------------------------------- objective piezo
@@ -885,6 +927,94 @@ class PiezoPanel(DevicePanel):
         return {} if self.device is None else self.device.get_metadata()
 
 
+# ---------------------------------------------------------------- filter wheels
+
+
+class FilterWheelPanel(DevicePanel):
+    """Filter wheels and shutters of the Lambda 10-3; rows built from its configuration."""
+
+    device_class = FilterWheel
+    import_error = FILTER_WHEEL_ERROR
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows = QtWidgets.QWidget()  # filled at connection
+        self.wheel_boxes = {}            # wheel -> (filter combo box, speed box)
+        self.shutter_widgets = {}        # shutter -> (state label, button)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(self.top)
+        layout.addWidget(self.rows)
+        layout.addStretch()
+        self.update_state()
+
+    def device_name(self):
+        return f"{self.device.port}, Lambda {self.device.configuration[:4]}"
+
+    def on_connected(self):
+        """One row per connected wheel and shutter."""
+        lambda10 = self.device
+        old_rows, self.rows = self.rows, QtWidgets.QWidget()
+        self.layout().replaceWidget(old_rows, self.rows)
+        old_rows.deleteLater()
+        form = QtWidgets.QFormLayout(self.rows)
+        self.wheel_boxes, self.shutter_widgets = {}, {}
+        for wheel in lambda10.wheels:
+            filters = QtWidgets.QComboBox()
+            filters.addItems([lambda10.filter_name(wheel, position) for position in range(10)])
+            speed = spin_box(0, 7, lambda10.speed[wheel])
+            speed.setToolTip("Wheel speed: 0 fastest, 7 slowest")
+            filters.activated.connect(lambda position, wheel=wheel: self.run(
+                self.device.move, wheel, position, self.wheel_boxes[wheel][1].value()))
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(filters, 1)
+            row.addWidget(QtWidgets.QLabel("speed"))
+            row.addWidget(speed)
+            form.addRow(f"Wheel {lambda10.wheel_label(wheel)}", row)
+            self.wheel_boxes[wheel] = (filters, speed)
+        for shutter in lambda10.shutters:
+            state = QtWidgets.QLabel("-")
+            button = QtWidgets.QPushButton("Open")
+            button.clicked.connect(lambda _, shutter=shutter: self.toggle_shutter(shutter))
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(state, 1)
+            row.addWidget(button)
+            form.addRow(f"Shutter {shutter}", row)
+            self.shutter_widgets[shutter] = (state, button)
+        self.refresh()
+
+    def refresh(self):
+        """Read the wheel positions and shutter states and display them."""
+        try:
+            status = self.device.get_status()
+        except Exception as error:
+            self.status.setText(f"Read error: {error}")
+            return
+        for wheel, (filters, speed) in self.wheel_boxes.items():
+            filters.setCurrentIndex(status["wheels"][wheel])
+        for shutter, (state, button) in self.shutter_widgets.items():
+            is_open = status["shutters"][shutter] == "open"
+            state.setText(status["shutters"][shutter])
+            button.setText("Close" if is_open else "Open")
+
+    def run(self, function, *args):
+        try:
+            function(*args)
+        except Exception as error:
+            show_error(self, error)
+        self.refresh()
+
+    def toggle_shutter(self, shutter):
+        is_open = self.shutter_widgets[shutter][0].text() == "open"
+        self.run(self.device.close_shutter if is_open else self.device.open_shutter, shutter)
+
+    def update_state(self):
+        super().update_state()
+        self.rows.setEnabled(self.device is not None)
+
+    def get_metadata(self):
+        return {} if self.device is None else self.device.get_metadata()
+
+
 # ---------------------------------------------------------------- main window
 
 
@@ -902,8 +1032,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.slm_panel = SLMPanel()
         self.prime_panel = PrimePanel(get_extra_metadata=self.extra_metadata)
         self.orca_panel = OrcaPanel(get_extra_metadata=self.extra_metadata)
+        self.flir_panel = FlirPanel(get_extra_metadata=self.extra_metadata)
         self.nikon_panel = NikonPanel()
         self.piezo_panel = PiezoPanel()
+        self.filter_panel = FilterWheelPanel()
 
         toolbar = self.addToolBar("Panels")
         toolbar.setObjectName("panels_toolbar")
@@ -913,8 +1045,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for panel, title, scroll in ((self.slm_panel, "SLM", False),
                                      (self.prime_panel, "Prime 95B", False),
                                      (self.orca_panel, "Orca Flash4", False),
+                                     (self.flir_panel, "FLIR Blackfly", False),
                                      (self.nikon_panel, "Microscope", True),
-                                     (self.piezo_panel, "Objective piezo", True)):
+                                     (self.piezo_panel, "Objective piezo", True),
+                                     (self.filter_panel, "Filter wheels", True)):
             dock = self.make_dock(panel, title, scroll)
             toolbar.addAction(dock.toggleViewAction())
             view_menu.addAction(dock.toggleViewAction())
@@ -955,17 +1089,20 @@ class MainWindow(QtWidgets.QMainWindow):
             dock.show()
 
     def default_layout(self):
-        """SLM, microscope and piezo on the left, the two cameras tabbed on the right."""
-        slm, prime, orca, nikon, piezo = self.docks
+        """SLM, microscope, piezo / filter wheels on the left, the cameras tabbed on the right."""
+        slm, prime, orca, flir, nikon, piezo, filters = self.docks
         for dock in self.docks:
             dock.setFloating(False)
             dock.show()
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, slm)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, prime)
         self.tabifyDockWidget(prime, orca)
+        self.tabifyDockWidget(orca, flir)
         self.splitDockWidget(slm, nikon, QtCore.Qt.Vertical)
         self.splitDockWidget(nikon, piezo, QtCore.Qt.Horizontal)
+        self.tabifyDockWidget(piezo, filters)
         prime.raise_()
+        piezo.raise_()
         self.resizeDocks([slm, prime], [700, 1000], QtCore.Qt.Horizontal)
 
     def dock_all(self):
@@ -978,9 +1115,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.restoreState(self.default_state)
 
     def extra_metadata(self):
-        """State of the SLM, microscope and piezo, saved with each camera image."""
+        """State of the SLM, microscope, piezo and filters, saved with each camera image."""
         metadata = {}
-        for panel in (self.slm_panel, self.nikon_panel, self.piezo_panel):
+        for panel in (self.slm_panel, self.nikon_panel, self.piezo_panel, self.filter_panel):
             try:
                 metadata.update(panel.get_metadata())
             except Exception as error:

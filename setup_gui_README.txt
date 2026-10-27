@@ -5,8 +5,11 @@ One window with a panel for each device:
   SLM               Thorlabs EXULUS-HD2              (SLM.py, SLM_README.txt)
   Prime 95B         Teledyne Photometrics camera     (camera.py, camera_README.txt)
   Orca Flash4       Hamamatsu ORCA-Flash4.0 V2       (orca.py, orca_README.txt)
+  FLIR Blackfly     FLIR Blackfly S BFS-U3-51S5M     (flir.py, flir_README.txt)
   Microscope        Nikon Eclipse Ti-E               (nikon_ti.py, nikon_ti_README.txt)
   Objective piezo   Thorlabs PPC001, objective Z     (piezo.py, piezo_README.txt)
+  Filter wheels     Sutter Lambda 10-3, wheels A B   (filter_wheel.py,
+                    and shutters A B                  filter_wheel_README.txt)
 
 Run:
   - double-click "Bumblebee" on the desktop (shortcut to run_setup_gui.bat,
@@ -32,8 +35,10 @@ Each panel is a dock window:
   - View > Reset layout             back to the default arrangement
 The arrangement (including separate windows and their screens) is saved when
 the main window is closed and restored at the next start.
-Default: SLM top left, microscope and piezo below it, the two cameras tabbed
-on the right.
+Default: SLM top left, microscope below it with the piezo and filter wheels
+tabbed next to it, the two cameras tabbed on the right. A panel added in a
+new version appears at its default place the first time; use View > Reset
+layout if needed.
 
 
 SLM panel
@@ -45,19 +50,20 @@ SLM panel
   Send automatically...      if ticked, a loaded mask is sent immediately
 
 
-Camera panels (Prime 95B, Orca Flash4)
---------------------------------------
+Camera panels (Prime 95B, Orca Flash4, FLIR Blackfly)
+-----------------------------------------------------
   Display                    last image, contrast histogram on the right
   Snap / Start-Stop live     one image / continuous acquisition
   Auto contrast              adjust the contrast on every new image
   top right                  Prime: sensor temperature (not updated during the
                              live: reading it would stop the live); Orca:
-                             cooler status
+                             cooler status; FLIR: nothing
   Settings tab
     Exposure                 in ms, applied when you leave the field (Enter/Tab)
     Binning                  applied immediately
     Readout                  Prime: port / speed / gain indexes + Apply readout
                              Orca: fast (standard) / slow (low noise)
+                             FLIR: gain in dB (automatic gain off)
     ROI x, y, w, h           Apply ROI; Full frame goes back to the full sensor
                              and binning 1 (the Orca rounds the ROI to 4 px)
     Select on image          shows a yellow rectangle on the image: move it,
@@ -76,8 +82,12 @@ Camera panels (Prime 95B, Orca Flash4)
 Files: <name>_<date>_<time>.tif + .json (saving.py). Besides the camera
 settings, the metadata contains the state of the other devices at saving time:
   slm_mask              name of the mask shown on the SLM (null if none)
-  microscope_...        objective, light path, z, xy, Perfect Focus
+  microscope_...        objective, light path, z, xy, Perfect Focus, filter
+                        cube (as set by hand)
   piezo_...             loop mode, voltage, position
+  filter_A_left,        position and filter of each wheel
+  filter_B_right
+  shutter_A, shutter_B  open / closed
 (only for the devices connected in the GUI)
 
 
@@ -85,6 +95,10 @@ Microscope panel
 ----------------
   Objective                  displayed only: it is never changed from software
   Light path                 Eye / Left / Right / Left80
+  Cube (set by hand)         the turret is not motorised: choose the cube in
+                             place (FILTER_CUBES in nikon_ti.py); remembered
+                             between sessions, saved with the images even if
+                             the microscope is not connected
   Focus                      Z - / Z + by Step (max 100 µm); Go to an absolute
                              position (asks for confirmation beyond 100 µm)
   Stage                      X - / X + / Y + / Y - by Step
@@ -103,6 +117,16 @@ Objective piezo panel
   Go to / - / +              moves, each waits until the position / voltage is
                              reached; a move larger than about 20 µm asks for
                              confirmation
+
+
+Filter wheels panel
+-------------------
+  Wheel A (left) /           choose a position (with its filter name, see
+  Wheel B (right)
+                             FILTERS / WHEEL_SIDES in filter_wheel.py): the wheel moves at
+                             the speed next to it (0 fastest, 7 slowest)
+  Shutter A / Shutter B      state, Open / Close button
+The rows are built from the configuration read from the controller.
 
 
 Code structure

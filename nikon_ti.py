@@ -24,6 +24,13 @@ XY_DRIVE = "TIXYDrive"
 PFS = "TIPFSStatus"
 PFS_OFFSET = "TIPFSOffset"
 
+# Filter cubes of the turret. The turret is not motorised on this Ti: the cube in place
+# is chosen by hand in the GUI (saved with the images), not read from the microscope.
+FILTER_CUBES = [
+    "1 - original cube",
+    "2 - dichroic 3 mm Di03-R405/488/561/635-t3-25x36",
+]
+
 
 class NikonTi:
     """

@@ -23,6 +23,10 @@ connect() loads the devices the microscope reports. On this Ti:
   TIZDrive     focus (µm)
   TIXYDrive    XY stage (µm)
   TIPFSStatus / TIPFSOffset   Perfect Focus System
+The filter cube turret is not motorised (no TIFilterBlock device): the cubes
+are listed in FILTER_CUBES (1 original cube, 2 dichroic 3 mm
+Di03-R405/488/561/635-t3-25x36) and the one in place is chosen by hand in the
+GUI.
 
   connect() / close()          load / release the microscope (it keeps its state)
   objectives, get_objective(), set_objective(x)
