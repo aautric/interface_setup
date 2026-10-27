@@ -2,8 +2,11 @@
 Control of the Thorlabs EXULUS-HD2 spatial light modulator.
 
 The SLM has two links to the PC:
-    - USB (virtual COM port): settings/commands, handled by EXULUS_COMMAND_LIB.
-    - HDMI: the phase image itself, the SLM is seen as a second monitor.
+    - HDMI: the phase image itself, the SLM is seen as a second monitor
+      (Thorlabs_EXULUS_CGHDisplay). This is all that is needed to display masks.
+    - USB (virtual COM port): settings/commands (EXULUS_COMMAND_LIB). Not used by default
+      (USE_USB): the Thorlabs USB library corrupts memory and crashes Python on this PC
+      since the Sutter Lambda 10-3 driver was installed (see SLM_README.txt).
 
 Python SDK (see EXULUS SDK Manual, chapter 3):
     C:/Program Files/Thorlabs/EXULUS/Help/SDK/Thorlabs_EXULUS_PythonSDK.zip
@@ -34,11 +37,26 @@ for path in SDK_PATHS:
         os.add_dll_directory(path)  # so Windows finds the DLLs
 
 try:
-    from EXULUS_COMMAND_LIB import *  # noqa: E402,F401,F403
     from Thorlabs_EXULUS_CGHDisplay import *  # noqa: E402,F401,F403
     SDK_ERROR = None
 except Exception as error:  # SDK missing: load_phase_pattern still usable
     SDK_ERROR = error
+
+# USB command link off by default: EXULUSListDevices / EXULUSOpen of the Thorlabs USB library
+# crash Python (Windows heap corruption 0xc0000374) when other device libraries are loaded,
+# as in the GUI, since the Sutter Lambda 10-3 driver was installed (2026-10-27).
+USE_USB = False
+_usb = None  # EXULUS_COMMAND_LIB module, imported only if the USB link is used
+
+
+def _usb_library():
+    """Import the Thorlabs USB command library on first use."""
+    global _usb
+    if _usb is None:
+        import EXULUS_COMMAND_LIB
+        _usb = EXULUS_COMMAND_LIB
+    return _usb
+
 
 BAUD_RATE = 38400  # value used in EXULUS_COMMAND_LIB_EXAMPLE.py
 TIMEOUT = 3        # seconds
@@ -46,8 +64,10 @@ SETTLE_TIME = 0.1  # s waited after show() so the liquid crystal settles (to mea
 
 ACK = 0x06  # answer of EXULUSCheckCommunication when the SLM is OK
 
-# USB ids of the Silicon Labs CP210x bridge of the EXULUS-HD2. EXULUSListDevices sometimes
-# returns nothing (the "unplug / plug again" state), but EXULUSOpen accepts the COM port.
+# USB ids of the Silicon Labs CP210x bridge of the EXULUS-HD2. The SLM is opened by its COM
+# port, found with pyserial: EXULUSListDevices is not used (it sometimes returns nothing, and
+# crashes Python since another USB-serial device driver was installed); EXULUSOpen accepts
+# the COM port.
 CP210X_VID = 0x10C4
 CP210X_PID = 0xEA60
 
@@ -64,15 +84,17 @@ class SLM:
             slm.show("my_mask.png")
     """
 
-    def __init__(self, serial_number=None, monitor=None,
-                 baud_rate=BAUD_RATE, timeout=TIMEOUT, settle_time=SETTLE_TIME):
+    def __init__(self, serial_number=None, monitor=None, baud_rate=BAUD_RATE,
+                 timeout=TIMEOUT, settle_time=SETTLE_TIME, use_usb=USE_USB):
         """
-        serial_number: serial number or COM port (e.g. "COM4") of the SLM;
-                       if None, the first EXULUS found is used.
+        serial_number: serial number or COM port (e.g. "COM4") of the SLM for the USB link;
+                       if None, the EXULUS COM port is searched.
         monitor: monitor id of the SLM (from 1 to monitor count); if None the last one is used.
         settle_time: seconds waited at the end of show(), so that the mask is stable
                      before a camera acquisition (0 = no wait).
+        use_usb: also open the USB command link (only a communication check is done with it).
         """
+        self.use_usb = use_usb
         self.serial_number = serial_number
         self.monitor = monitor
         self.baud_rate = baud_rate
@@ -84,37 +106,45 @@ class SLM:
         self.window = None  # HDMI display window handle
 
     def connect(self):
-        """Find the SLM, open the USB connection and check that the SLM answers."""
+        """
+        Check that the SLM monitor (HDMI) is there; with use_usb, also open the USB link
+        and check that the SLM answers.
+        """
         if SDK_ERROR is not None:
             raise RuntimeError(f"EXULUS SDK not loaded ({SDK_ERROR}). Check SDK_PATHS in SLM.py.")
+        if CghDisplayGetMonitorCount() < 2:
+            raise RuntimeError("The SLM monitor is not seen (only one screen). Check the "
+                               "HDMI cable and that the SLM controller is on.")
+        if not self.use_usb:
+            print("SLM ready (HDMI display, no USB link).")
+            return
+
+        usb = _usb_library()
         if self.serial_number is None:
-            devices = EXULUSListDevices()  # list of [serialNumber, EXULUSType]
-            if devices:
-                print("EXULUS devices found:", devices)
-                self.serial_number = devices[0][0]
-            else:
-                self.serial_number = find_exulus_port()
-
-        if EXULUSIsOpen(self.serial_number) == 1:
-            print(f"SLM {self.serial_number} is already open, closing it first is recommended.")
-
-        hdl = EXULUSOpen(self.serial_number, self.baud_rate, self.timeout)
+            # not EXULUSListDevices(): it crashes Python (heap corruption in the Thorlabs DLL)
+            self.serial_number = find_exulus_port()
+        hdl = usb.EXULUSOpen(self.serial_number, self.baud_rate, self.timeout)
         if hdl < 0:
             raise RuntimeError(f"Could not open SLM {self.serial_number} (error code {hdl}).")
         self.hdl = hdl
-
         if not self.is_connected():
             self.close()
             raise RuntimeError(f"SLM {self.serial_number} does not answer.")
-
         print(f"Connected to SLM {self.serial_number} (handle {self.hdl}).")
 
+    @property
+    def name(self):
+        """'HDMI' or 'HDMI + USB COM4', for display."""
+        return f"HDMI + USB {self.serial_number}" if self.hdl is not None else "HDMI"
+
     def is_connected(self):
-        """Return True if the SLM answers on the USB connection."""
-        if self.hdl is None:
+        """True if the SLM monitor is seen and, with the USB link, if the SLM answers."""
+        if CghDisplayGetMonitorCount() < 2:
             return False
+        if self.hdl is None:
+            return not self.use_usb
         ack_code = [0]
-        result = EXULUSCheckCommunication(self.hdl, ack_code)
+        result = _usb_library().EXULUSCheckCommunication(self.hdl, ack_code)
         return result == 0 and ack_code[0] == ACK
 
     def open_window(self):
@@ -158,7 +188,7 @@ class SLM:
             CghDisplayCloseWindow(self.window)
             self.window = None
         if self.hdl is not None:
-            EXULUSClose(self.hdl)
+            _usb_library().EXULUSClose(self.hdl)
             self.hdl = None
 
     def __enter__(self):

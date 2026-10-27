@@ -191,7 +191,7 @@ class SLMPanel(DevicePanel):
         self.display_pattern()
 
     def device_name(self):
-        return self.device.serial_number
+        return self.device.name
 
     def display_pattern(self):
         self.view.setImage(self.pattern, levels=(0, 255))

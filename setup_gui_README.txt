@@ -43,6 +43,9 @@ layout if needed.
 
 SLM panel
 ---------
+  Connect                    checks the SLM screen (HDMI); the USB link is not
+                             used (the Thorlabs USB library crashes the GUI,
+                             see SLM_README.txt)
   Load image / .npy...       choose a mask file (.png .bmp .tif .npy); it is
                              checked (1200 x 1920, values 0-255) and previewed
   Send to SLM                display the previewed mask on the SLM (HDMI)

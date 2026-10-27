@@ -18,8 +18,14 @@ The SLM class
 It stores the serial number, the monitor, the USB handle (hdl) and the
 display window (window) inside the object.
 
-  connect()          find the SLM, open the USB port, check that the SLM answers
-  is_connected()     return True if the SLM answers (useful to check at any time)
+  connect()          check that the SLM monitor (HDMI) is seen; with
+                     SLM(use_usb=True), also open the USB port and check that the
+                     SLM answers. USB is OFF by default (USE_USB in SLM.py): see
+                     below, the Thorlabs USB library crashes Python on this PC.
+                     Masks only need HDMI.
+  is_connected()     return True if the SLM monitor is seen (and, with USB, if
+                     the SLM answers)
+  name               "HDMI" or "HDMI + USB COM4"
   open_window()      create the HDMI display window on the SLM monitor
   show(source)       load a mask (array, image or .npy) and display it;
                      opens the window the first time, then waits settle_time
@@ -78,5 +84,14 @@ Checked on the setup (2026-10-26)
     the USB cable to be unplugged and plugged again), while
     EXULUSOpen("COM4", ...) still works and the SLM answers ACK.
     connect() therefore falls back to the CP210x COM port (find_exulus_port()).
+  - 2026-10-27: since the Sutter Lambda 10-3 and its USB driver were added,
+    the Thorlabs USB library (exulus_command_library.dll) corrupts memory
+    while scanning the serial devices: EXULUSListDevices() always crashes
+    Python (Windows heap corruption, 0xc0000374), and EXULUSOpen() too when
+    other libraries are loaded (PVCAM, pylablib, pyqtgraph: i.e. in the GUI).
+    The bug is in the Thorlabs DLL. The USB link is therefore off by default
+    and its library is not even loaded; the display (HDMI, cgh_display.dll)
+    is not affected. To use USB again: SLM(use_usb=True), in a small script
+    that loads nothing else, or with a newer Thorlabs EXULUS SDK.
 Still to check on the setup:
   - settle_time: measure how long the SLM takes to settle after a new mask
