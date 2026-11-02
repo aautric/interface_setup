@@ -35,8 +35,9 @@ Each panel is a dock window:
   - View > Reset layout             back to the default arrangement
 The arrangement (including separate windows and their screens) is saved when
 the main window is closed and restored at the next start.
-Default: SLM top left, microscope below it with the piezo and filter wheels
-tabbed next to it, the two cameras tabbed on the right. A panel added in a
+Default: SLM top left, microscope below it with the piezo next to it and the
+filter wheels under the piezo (space kept for the laser panel, to come), the
+two cameras tabbed on the right. A panel added in a
 new version appears at its default place the first time; use View > Reset
 layout if needed.
 
@@ -46,10 +47,20 @@ SLM panel
   Connect                    checks the SLM screen (HDMI); the USB link is not
                              used (the Thorlabs USB library crashes the GUI,
                              see SLM_README.txt)
-  Load image / .npy...       choose a mask file (.png .bmp .tif .npy); it is
-                             checked (1200 x 1920, values 0-255) and previewed
+  Load image / .npy...       choose a mask file (.png .bmp .tif .npy), opens in
+                             Desktop\SLM_masks (easy masks: two_vortex.png,
+                             diagonal diffraction grating made by
+                             make_slm_masks.py); it is
+                             checked (1200 x 1920, values 0-255), a window
+                             asks whether to link it to a calibration
+                             (align_BFP), and it is previewed (corrected if
+                             linked: each SLM half moved onto its BFP)
   Send to SLM                display the previewed mask on the SLM (HDMI)
   Blank (0)                  load an all-zero mask
+  Calibration...             link / unlink a calibration (the mask is
+                             corrected again, re-sent if it was on the SLM)
+  Corner of the display      "Calibration linked: <file>" while one is linked
+                             (see calibration_README.txt)
   Send automatically...      if ticked, a loaded mask is sent immediately
 
 
@@ -58,9 +69,14 @@ Camera panels (Prime 95B, Orca Flash4, FLIR Blackfly)
   Display                    last image, contrast histogram on the right
   Snap / Start-Stop live     one image / continuous acquisition
   Auto contrast              adjust the contrast on every new image
-  top right                  Prime: sensor temperature (not updated during the
-                             live: reading it would stop the live); Orca:
-                             cooler status; FLIR: nothing
+  Temperature (Prime)        box in the top-left corner of the image:
+                             "sensor": read every 2 s (frozen during the live,
+                             "(before live)": reading it would stop the live);
+                             "last image": temperature recorded with the last
+                             snap / sequence (the value saved in its metadata)
+  top right                  Orca: cooler status (the Flash4.0 V2 gives no
+                             temperature); FLIR: nothing (its sensor
+                             temperature is not exposed by Micro-Manager)
   Settings tab
     Exposure                 in ms, applied when you leave the field (Enter/Tab)
     Binning                  applied immediately
@@ -73,31 +89,155 @@ Camera panels (Prime 95B, Orca Flash4, FLIR Blackfly)
                              resize it with its corner handle; x, y, w, h follow
                              (in full-sensor pixels, also on an image already
                              cropped / binned); then Apply ROI
+    Advanced settings...     window with all the parameters of the camera:
+                             value, default (Prime), allowed values / range,
+                             adjustable or read only (greyed), description
+                             (Prime); search box (names and descriptions),
+                             "Adjustable only", "Changed only"; values
+                             different from the default highlighted; "Reset
+                             to defaults..." (Prime: back to the values read
+                             at connection, except exposure, binning, ROI);
+                             a drop-down / Enter in a value field
+                             applies it at once (live paused meanwhile), then
+                             everything is re-read. Prime: all PVCAM
+                             parameters the camera supports; Orca: all DCAM
+                             attributes; FLIR: the ~30 properties of the
+                             Micro-Manager Spinnaker driver (the camera has
+                             more GenICam features, not reachable this way).
+                             Exposure, binning, ROI: use the main panel.
     Prime readout            valid combinations (PVCAM table): port 0,
                              speed 0 with gain 1 (full well) / 2 (balanced) /
                              3 (sensitivity), or speed 1 with gain 1 (HDR, 16 bit)
   Saving tab
-    Folder, Name, Frames     destination, base name, number of frames
+    Folder                   D:\BUMBLEBEE_acquisitions\YYYY_MM_DD_<experiment>
+                             [\<subfolder>] (toolbar, see below), and the
+                             name of the next acquisition (see File names)
+    Pixels                  16 bit (2 bytes, as acquired) or 8 bit (1 byte):
+                             8 bit halves the files but keeps only the 8
+                             highest bits of the camera values (Prime: of 12
+                             bits, value / 16; Orca and FLIR: of 16 bits,
+                             value / 256): faint signals become coarse. The
+                             metadata has saved_pixel_bits and
+                             saved_value_shift (camera value ~ saved value x
+                             2^shift). Live and display are not changed.
+    Frames                   number of frames, with the size of one frame and
+                             of the sequence as saved (ROI, binning, pixels)
     Save last image / Acquire and save sequence
   If the live is running it is paused while a setting is changed or a
   sequence is acquired, then restarted.
+  Acquire and save sequence: the frames are written to the TIFF files as they
+  arrive (nothing kept in memory, up to 10 million frames, MAX_FRAMES; the
+  disk space is the limit). A long sequence is split into files of ~10 GB
+  (BigTIFF, opened by Fiji / tifffile), each moved to D: as soon as it is
+  complete. A progress window shows the frame, the frame rate and the time
+  left, with a Stop button; the image keeps refreshing with the frames of the
+  sequence (~10 per s, SEQUENCE_DISPLAY_PERIOD); Stop keeps the frames
+  already saved, and on an error the frames taken before stay in the files.
+  The .json has the number of frames really saved (the TIFF description has
+  the planned one).
+  Prime: the sequence runs continuously (no dead time between frames; until
+  2026-10-28 it was one snap per frame, ~4 frames/s at most), with lost-frame
+  detection and the camera time stamp of each frame (camera_README.txt).
+  Full frame: 80 frames/s at 10 ms exposure, tested with 10 000 frames.
+  Before starting, the free space is checked on the fast disk (C:) and on
+  the destination (D:), counting the files still being moved to D: and
+  keeping 5 GB free (FREE_SPACE_MARGIN in saving.py); if it is short the
+  acquisition does not start and the message says which disk. Same check
+  for Save last image. After the sequence, the image shown
+  is its last frame ("Save last image" saves this frame alone).
+  Disk speed: C: is an NVMe SSD (FLIR full frame 26 frames/s = 250 MB/s:
+  1000 frames, 10 GB, no loss); D: E: F: are hard disks: written directly,
+  after ~3.5 GB the FLIR at full speed was faster than the disk (camera buffer
+  overflow, "Frames lost"). So sequences are written on C:\BUMBLEBEE_staging
+  and moved to D: in the background at the end (snaps go directly to D:).
+  (2026-10-27: a long FLIR sequence blocked the window, Windows showed "Not
+  responding", and closing it left the camera locked in acquisition.)
 
-Files: <name>_<date>_<time>.tif + .json (saving.py). Besides the camera
-settings, the metadata contains the state of the other devices at saving time:
-  slm_mask              name of the mask shown on the SLM (null if none)
-  microscope_...        objective, light path, z, xy, Perfect Focus, filter
-                        cube (as set by hand)
-  piezo_...             loop mode, voltage, position
-  filter_A_left,        position and filter of each wheel
-  filter_B_right
-  shutter_A, shutter_B  open / closed
-(only for the devices connected in the GUI)
+Experiment (toolbar)
+--------------------
+  Experiment: <name>         all the cameras save in
+                             D:\BUMBLEBEE_acquisitions\YYYY_MM_DD_<name>
+                             (date of the acquisition; ACQUISITION_ROOT in
+                             saving.py). Nothing is saved until a name is set;
+                             the name is kept between sessions.
+  Subfolder: <sub>           optional: if not empty, everything is saved in
+                             YYYY_MM_DD_<name>\<sub> (created if needed);
+                             empty: directly in YYYY_MM_DD_<name>. Also kept
+                             between sessions.
+  moving n file(s) to D:...  sequences waiting to be moved from the fast disk
+                             (C:\BUMBLEBEE_staging, STAGING_ROOT). Each file is
+                             copied, then deleted from C:. When closing, the
+                             window waits for the moves ("Close now" leaves them
+                             on C:); files left on C: are moved at the next start.
+
+Size of one frame, full sensor, 16 bit / 8 bit (1000 frames: x 1000):
+  Prime 95B   1200 x 1200   2.9 MB / 1.4 MB
+  Orca        2048 x 2048   8.4 MB / 4.2 MB
+  FLIR        2448 x 2048  10.0 MB / 5.0 MB
+  binning 2: / 4
+
+File names (saving.py): all the information is in the metadata, so the names
+are just numbers. In a folder, the acquisitions (snaps saved with "Save last
+image" and sequences, all cameras) are numbered 0, 1, 2... in order:
+  X_Y.tiff       acquisition X, file Y (0, 1...: a sequence larger than
+                 ~10 GB, PIECE_BYTES, is split; each file has the metadata in
+                 its first page, with file_index and first_frame)
+  X.json         metadata of acquisition X (sections below)
+  X_frames.csv   sequences: for each frame, pc_time_s (PC clock when the
+                 frame arrived, from the first frame), camera_frame and
+                 camera_time_s (Prime: camera counter and time stamp of the
+                 start of the exposure), slm_mask (number of the SLM mask
+                 shown, or none)
+  X_slm_masks\   the SLM masks shown during acquisition X, K.png, numbered in
+                 the order they first appear (a mask shown again keeps its
+                 number: one mask all along = a single 0.png)
+  X_calibrations\ copies of the calibration files that corrected the SLM
+                 mask (linked in the SLM panel), with their .png
+The next number is 1 + the highest one found in the folder (and in its
+fast-disk copy), so it is never reused. The acquisitions of 2026-10-27 were
+renamed to this scheme (2026_10_27_test\renamed_files.txt; the old name is in
+each .json, original_file_name).
+Metadata (X.json and the first page of each TIFF file), recorded when the
+images are taken (a snap saved later: the state at the snap), in 4 sections
+(saving.organize_metadata; since 2026-10-29, before: one flat dictionary):
+  acquisition   index, camera, date, n_frames, frame_times, saved_pixel_bits
+                (saved_value_shift), first_frame_pc_time, files,
+                frame_times_file
+  devices       connected: {slm, prime_95b, orca_flash4, flir_blackfly,
+                microscope, objective_piezo, filter_wheels: true / false}
+                (MainWindow.extra_metadata), then
+                microscope: connected, filter_cube (set by hand, always),
+                  objective, light_path, z_um, xy_um, pfs_on, pfs_status,
+                  pfs_offset
+                objective_piezo: connected, serial_number, closed_loop,
+                  voltage_V, position_um
+                filter_wheels: connected, filter_A_left, filter_B_right,
+                  shutter_A, shutter_B
+  slm           connected, link, monitor, size, settle_time_s, mask_shown,
+                linked_calibrations (calibrations that corrected the mask
+                shown: {align_BFP: file, date, light_path, correction, copy
+                (in X_calibrations)}, empty if none),
+                masks_folder, masks [{number, file, name, first_frame}],
+                mask_of_each_frame ("X_frames.csv, column slm_mask", or the
+                list for a snap). The SLM mask of each frame is read at each
+                frame (SequenceWriter slm_mask = MainWindow.shown_slm_mask).
+  camera        main settings (camera's get_metadata: exposure, ROI,
+                binning, readout, temperature...), then advanced: every
+                parameter of the advanced settings window {name: value}
+                (Prime: + post_processing, the despeckle filters / QuantView)
+
+
+Calibration
+-----------
+Upper right corner of the window (end of the toolbar row, CalibrationPanel):
+one button per calibration of calibration.py, each opening its step-by-step
+window (optical elements to place, devices to connect, then the calibration).
+First one: Align BFP (align_BFP). See calibration_README.txt.
 
 
 Microscope panel
 ----------------
   Objective                  displayed only: it is never changed from software
-                             (name corrected by OBJECTIVE_LABELS in nikon_ti.py)
   Light path                 Eye / Left / Right / Left80, ~3 s per change; the
                              box is red when the light goes left, green when it
                              goes right (LIGHT_PATH_COLORS in setup_gui.py)
@@ -108,7 +248,15 @@ Microscope panel
   Focus                      Z - / Z + by Step (max 100 µm); Go to an absolute
                              position (asks for confirmation beyond 100 µm)
   Stage                      X - / X + / Y + / Y - by Step
-  Perfect Focus              On / status / offset
+  Perfect Focus              just under Optics. On: lock the focus (sample with
+                             oil under the objective, near focus first);
+                             status in green (locked), orange (searching /
+                             focusing) or red (out of range, error);
+                             Offset: current PFS offset; - / + by Step move the
+                             focal plane while the PFS holds the focus;
+                             Target + Set offset for an absolute value.
+                             Needs the objective registered in the Ti
+                             (TiControl, see nikon_ti_README.txt)
 The positions are read every 0.5 s.
 
 
@@ -147,6 +295,9 @@ A new device = a new DevicePanel subclass, added in MainWindow.__init__.
 
 Known limits
 ------------
+  - Advanced settings tested on the FLIR (2026-10-27) and the Prime
+    (2026-10-29, reading: two long text parameters crashed it, now skipped);
+    the Orca window is not tested on the camera yet.
   - The lives read the frames in the main thread: with long exposures, or both
     cameras in live, the window reacts slowly. Fix: acquisition in a QThread.
   - Prime readout port/speed/gain are free indexes (0-10): the valid

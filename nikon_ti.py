@@ -10,6 +10,7 @@ Close NIS-Elements / Micro-Manager / TiControl before connecting.
 """
 
 import os
+import time
 
 import pymmcore
 
@@ -23,6 +24,10 @@ Z_DRIVE = "TIZDrive"
 XY_DRIVE = "TIXYDrive"
 PFS = "TIPFSStatus"
 PFS_OFFSET = "TIPFSOffset"
+STATE_TIMEOUT = 20  # s: a light path change can take longer than the 5 s of waitForDevice
+# devices reported by the Ti of this setup (2026-10-26); one missing at connection usually
+# means the microscope (or its controller) was not ready: switch it off / on, reconnect
+EXPECTED_DEVICES = [NOSEPIECE, LIGHT_PATH, Z_DRIVE, XY_DRIVE, PFS, PFS_OFFSET]
 
 # Filter cubes of the turret. The turret is not motorised on this Ti: the cube in place
 # is chosen by hand in the GUI (saved with the images), not read from the microscope.
@@ -32,12 +37,12 @@ FILTER_CUBES = [
 ]
 DEFAULT_FILTER_CUBE = FILTER_CUBES[1]
 
-# Corrections of the objective names stored in the Ti (nosepiece position -> name), when
-# they are out of date. Position 3 is reported "Unknown" but holds the 100x oil objective
-# (user, 2026-10-27).
-OBJECTIVE_LABELS = {
-    3: "3-Apo TIRF 100x NA 1.49 Oil",
-}
+# Objective names used instead of the ones stored in the Ti (nosepiece position -> name).
+# The setup always uses the 100x NA 1.49 oil at position 3: its name is fixed here, because
+# the registration in the Ti can be lost (2026-10-27, after a power cycle: "3-Unknown").
+# This only changes the name shown and saved; the Perfect Focus still needs the objective
+# registered in the Ti (TiControl: Setting > Component > Nosepiece > Send).
+OBJECTIVE_LABELS = {3: "3-Apo TIRF 100x NA 1.49 Oil"}
 
 
 class NikonTi:
@@ -76,6 +81,12 @@ class NikonTi:
         self.devices = devices
         print(f"Connected to Nikon {core.getProperty(HUB, 'FirmwareVersion')}, "
               f"devices: {', '.join(devices)}.")
+        if self.missing_devices():
+            print(f"Not reported by the microscope: {', '.join(self.missing_devices())}")
+
+    def missing_devices(self):
+        """Devices of this setup the microscope did not report (normally none)."""
+        return [device for device in EXPECTED_DEVICES if not self.has(device)]
 
     def is_connected(self):
         """Return True if the microscope is connected."""
@@ -130,7 +141,23 @@ class NikonTi:
             if len(matches) != 1:
                 raise ValueError(f"{value!r} matches {len(matches)} of {labels}.")
             self.core.setStateLabel(device, matches[0])
-        self.core.waitForDevice(device)
+        self._wait_state(device, labels[value - 1] if isinstance(value, int) else matches[0])
+
+    def _wait_state(self, device, target):
+        """Wait until the state device is not busy any more (up to STATE_TIMEOUT), then check
+        that it is on the target label."""
+        try:
+            self.core.waitForDevice(device)
+        except Exception as error:  # Micro-Manager timeout (5 s): keep waiting
+            if "timed out" not in str(error).lower():
+                raise
+            deadline = time.monotonic() + STATE_TIMEOUT
+            while self.core.deviceBusy(device) and time.monotonic() < deadline:
+                time.sleep(0.1)
+        label = self.core.getStateLabel(device)
+        if label != target:
+            raise RuntimeError(f"{device} is on {label!r}, not on {target!r}, after "
+                               f"{STATE_TIMEOUT} s.")
 
     # ---------- focus and stage (µm) ----------
 

@@ -1,0 +1,383 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bumblebee user manual</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+  :root { --ink: #1b1b1b; --muted: #5a5a5a; --line: #d9d9d4; --accent: #b8860b; --soft: #faf7ee; --warn: #fdecea; --warn-ink: #8a1c13; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5pt; line-height: 1.45; color: var(--ink); background: #fff; margin: 0; }
+  h1 { font-size: 26pt; margin: 0 0 4pt; }
+  h2 { font-size: 15pt; margin: 22pt 0 6pt; padding-bottom: 3pt; border-bottom: 2px solid var(--accent); page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 14pt 0 4pt; page-break-after: avoid; }
+  p, ul, ol { margin: 4pt 0 6pt; }
+  li { margin: 1.5pt 0; }
+  code, .k { font-family: Consolas, monospace; font-size: 9.5pt; background: #f2f2ef; padding: 0 3px; border-radius: 3px; }
+  .k { background: #eef1f7; }
+  table { border-collapse: collapse; width: 100%; margin: 6pt 0 8pt; font-size: 9.8pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 3pt 6pt; text-align: left; vertical-align: top; }
+  th { background: #f4f3ef; }
+  figure { margin: 8pt 0 10pt; text-align: center; page-break-inside: avoid; }
+  figure img { max-width: 100%; border: 1px solid var(--line); }
+  figure.half img { max-width: 62%; }
+  figcaption { font-size: 9pt; color: var(--muted); margin-top: 3pt; }
+  .box { border-left: 4px solid var(--accent); background: var(--soft); padding: 6pt 10pt; margin: 8pt 0; page-break-inside: avoid; }
+  .warn { border-left: 4px solid #c62828; background: var(--warn); color: var(--warn-ink); padding: 6pt 10pt; margin: 8pt 0; page-break-inside: avoid; }
+  .cover { page-break-after: always; padding-top: 40mm; }
+  .cover .sub { font-size: 13pt; color: var(--muted); }
+  .toc ol { columns: 2; font-size: 10.5pt; }
+  .new { page-break-before: always; }
+  .small { font-size: 9pt; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Bumblebee</h1>
+  <p class="sub">User manual of the control interface of the setup<br>
+  Institut Curie &mdash; version of 29 October 2026</p>
+  <figure><img src="img/main_window.png" alt="Bumblebee main window"></figure>
+  <div class="toc">
+    <h3>Contents</h3>
+    <ol>
+      <li>Starting Bumblebee</li>
+      <li>Safety rules</li>
+      <li>The window: panels and layout</li>
+      <li>Experiment, folders and file names</li>
+      <li>Cameras: live, settings, saving</li>
+      <li>Long sequences</li>
+      <li>SLM</li>
+      <li>Microscope (Nikon Ti-E)</li>
+      <li>Objective piezo</li>
+      <li>Filter wheels and shutters</li>
+      <li>Calibration</li>
+      <li>Files and metadata: reading the data</li>
+      <li>Troubleshooting</li>
+      <li>Known limits</li>
+      <li>Version history</li>
+    </ol>
+  </div>
+</div>
+
+<h2>1. Starting Bumblebee</h2>
+<ul>
+  <li>Double-click <b>Bumblebee</b> on the desktop. Its black console window stays minimised; if the program stops with an error, the console stays open with the message.</li>
+  <li>Or, in an Anaconda Prompt: <code>conda activate setup_env</code> then <code>python setup_gui.py</code> in <code>Documents\GitHub\interface_setup</code>.</li>
+  <li>Close NIS-Elements, Micro-Manager, TiControl, PVCamTest and SpinView first: a device can be used by only one program at a time.</li>
+  <li>Each device is connected with its own <b>Connect</b> button. A panel whose software library is missing shows &ldquo;Not available: &hellip;&rdquo;, and the other panels still work.</li>
+  <li>Closing the window disconnects every device. If files are still being moved to D:, it waits; <b>Close now</b> leaves them on C:, and they are moved at the next start.</li>
+</ul>
+
+<h2>2. Safety rules</h2>
+<div class="warn">
+  <ul>
+    <li>The <b>objective nosepiece is never turned from software</b>. The objective is only shown, never changed.</li>
+    <li>Open the <b>shutters</b> only when the light path and the sample are ready. Lasers must be off before the galvo controller is started.</li>
+    <li>Focus, stage and piezo moves are absolute or relative. Check the step before clicking. Large moves ask for confirmation: focus beyond 100 &micro;m, piezo beyond ~20 &micro;m.</li>
+  </ul>
+</div>
+
+<h2>3. The window: panels and layout</h2>
+<p>There is one panel per device: SLM, Prime 95B, Orca Flash4, FLIR Blackfly, Microscope, Objective piezo and Filter wheels. Each panel is a dock window:</p>
+<table>
+  <tr><th>Action</th><th>How</th></tr>
+  <tr><td>Show / hide a panel</td><td>Toolbar buttons, or the <b>View</b> menu</td></tr>
+  <tr><td>Move a panel</td><td>Drag its title bar next to another panel, or onto it to make tabs</td></tr>
+  <tr><td>Separate window, e.g. on another screen</td><td>Double-click the title bar, or drag it out</td></tr>
+  <tr><td>Put the separate windows back</td><td>View &gt; <b>Dock all panels</b></td></tr>
+  <tr><td>Default arrangement</td><td>View &gt; <b>Reset layout</b></td></tr>
+</table>
+<p>The arrangement is saved when the window is closed and restored at the next start. By default:</p>
+<ul>
+  <li>SLM top left;</li>
+  <li>the microscope below it, with the piezo next to it and the filter wheels under the piezo;</li>
+  <li>the three cameras in tabs on the right.</li>
+</ul>
+
+<h2>4. Experiment, folders and file names</h2>
+<h3>Where the files go</h3>
+<p>Set the experiment name in the <b>Experiment</b> box of the toolbar. All the cameras then save in:</p>
+<p><code>D:\BUMBLEBEE_acquisitions\YYYY_MM_DD_&lt;experiment&gt;</code> (date of the acquisition)</p>
+<ul>
+  <li><b>Subfolder</b> (optional): if not empty, everything goes into <code>YYYY_MM_DD_&lt;experiment&gt;\&lt;subfolder&gt;</code>, created when needed.</li>
+  <li>Nothing can be saved until an experiment name is set. Both names are kept between sessions.</li>
+  <li>The characters <code>&lt; &gt; : " / \ | ? *</code> are not allowed. The name turns red in the camera panel if it is invalid.</li>
+</ul>
+<h3>File names</h3>
+<p>All the information (camera, settings, state of every device) is in the metadata, so file names are just numbers. In a folder, the acquisitions are numbered <b>0, 1, 2&hellip;</b> in the order they are made, whichever camera made them; this covers snaps saved with &ldquo;Save last image&rdquo; and sequences.</p>
+<table>
+  <tr><th>File</th><th>Content</th></tr>
+  <tr><td><code>X_Y.tiff</code></td><td>Acquisition X, file Y. A sequence larger than ~10 GB is split into <code>X_0.tiff</code>, <code>X_1.tiff</code>&hellip; Each file has the metadata in its first image, with <code>file_index</code> and <code>first_frame</code>.</td></tr>
+  <tr><td><code>X.json</code></td><td>Metadata of acquisition X, readable in any text editor. It includes the number of frames really saved and the list of its files.</td></tr>
+  <tr><td><code>X_frames.csv</code></td><td>Sequences: time and SLM mask of each frame (see section 12).</td></tr>
+  <tr><td><code>X_slm_masks\</code></td><td>The SLM masks shown during acquisition X, numbered 0, 1&hellip; (only if a mask was shown).</td></tr>
+  <tr><td><code>X_calibrations\</code></td><td>Copies of the calibration files that corrected the SLM mask (only if one was linked).</td></tr>
+</table>
+<p>The camera panel shows the name of the next acquisition under the folder (&ldquo;next acquisition: 3_0.tiff + 3.json&rdquo;). A number is never reused: the next one is 1 + the highest found in the folder.</p>
+<h3>Fast disk and moving</h3>
+<ul>
+  <li><b>Sequences</b> are written on the fast disk <code>C:\BUMBLEBEE_staging</code> (NVMe SSD), then moved to D: in the background. D:, E: and F: are hard disks, too slow for the cameras at full speed.</li>
+  <li>Each file of a long sequence is moved as soon as it is complete. <b>Snaps</b> go directly to D:.</li>
+  <li>The toolbar shows &ldquo;moving n file(s) to D:&rdquo; while files are waiting.</li>
+  <li><b>Free space check</b> before every acquisition, on C: and D:. It counts the files still being moved and always keeps 5 GB free. If space is short, the acquisition does not start and the message names the disk.</li>
+</ul>
+
+<h2 class="new">5. Cameras: live, settings, saving</h2>
+<p>The Prime 95B, Orca Flash4 and FLIR Blackfly panels work the same way.</p>
+<figure><img src="img/camera_settings.png" alt="Camera panel, Settings tab" style="max-width:80%"><figcaption>Camera panel, Settings tab. The screenshot was made without a camera, so the buttons are greyed.</figcaption></figure>
+<h3>Image and acquisition</h3>
+<ul>
+  <li><b>Snap</b>: one image. <b>Start live / Stop live</b>: continuous display.</li>
+  <li><b>Auto contrast</b>: the contrast follows each new image. Otherwise set it with the histogram on the right of the image, by dragging its ends.</li>
+  <li>Under the image: size, minimum, maximum and mean of the last image.</li>
+  <li><b>Temperature (Prime)</b>: box in the top-left corner of the image, read every 2 s. During the live or a sequence it shows the value from before, because reading it would stop the acquisition. &ldquo;last image&rdquo; is the value saved with the last snap or sequence.</li>
+  <li>Orca: cooler status at the top right. The FLIR gives no temperature.</li>
+</ul>
+<h3>Settings tab</h3>
+<table>
+  <tr><th>Setting</th><th>Use</th></tr>
+  <tr><td>Exposure</td><td>In ms. Applied when you leave the field (Enter or Tab).</td></tr>
+  <tr><td>Binning</td><td>Applied immediately.</td></tr>
+  <tr><td>Readout</td><td>Prime: port / speed / gain indexes + <b>Apply readout</b>. Valid combinations: speed 0 with gain 1 (full well), 2 (balanced) or 3 (sensitivity); or speed 1 with gain 1 (HDR, 16 bit).<br>Orca: fast (standard) / slow (low noise).<br>FLIR: gain in dB (automatic gain off).</td></tr>
+  <tr><td>ROI x, y, w, h</td><td><b>Apply ROI</b>. <b>Full frame</b> goes back to the whole sensor and binning 1. The Orca rounds the ROI to 4 pixels.</td></tr>
+  <tr><td>Select on image</td><td>A yellow rectangle appears on the image. Move it, and resize it with its corner handle; x, y, w, h follow, in full-sensor pixels. Then <b>Apply ROI</b>.</td></tr>
+  <tr><td>Advanced settings&hellip;</td><td>All the parameters of the camera, with their value, range, whether they can be changed, and a short description. The search box searches names and descriptions; there are &ldquo;Adjustable only&rdquo; and &ldquo;Changed only&rdquo; filters. A choice, or Enter in a value field, applies it at once; the live is paused meanwhile. Closing the window does <b>not</b> undo a change. Prime only, see below: default, highlighting and Reset.</td></tr>
+</table>
+<p><b>Prime advanced settings: defaults.</b> The &ldquo;Default&rdquo; column is the normal state of the camera, as it is when opened. One exception: the temperature setpoint stays in the camera after closing, until the camera is switched off, so its default is fixed at <b>&minus;15 &deg;C</b>. A parameter different from its default is highlighted in orange; tick <b>Changed only</b> to see just those. <b>Reset to defaults&hellip;</b> sets them all back, except exposure, binning and ROI, which are main-panel settings. Disconnect / Connect also restores everything except the temperature setpoint, so use Reset for that. The Orca and FLIR windows have no default column.</p>
+<p><b>Despeckle filters off.</b> The Prime can replace isolated pixels much brighter or darker than their neighbours (4 &ldquo;despeckle&rdquo; filters). It turns them on each time it is opened. Bumblebee turns them off at every connection, so the data are raw. Their state is saved in the metadata of every image, under <code>post_processing</code>.</p>
+<figure><img src="img/advanced_settings.png" alt="Prime advanced settings window" style="max-width:100%"><figcaption>Prime advanced settings: CLEAR_MODE was changed, so it is highlighted, with its default (Pre-Exposure) next to it.</figcaption></figure>
+<p>If the live is running, it is paused while a setting is changed or a sequence is acquired, then restarted.</p>
+<figure><img src="img/camera_saving.png" alt="Camera panel, Saving tab" style="max-width:80%"><figcaption>Saving tab: destination, next acquisition, pixel size, number of frames and size.</figcaption></figure>
+<h3>Saving tab</h3>
+<table>
+  <tr><th>Field</th><th>Use</th></tr>
+  <tr><td>Folder</td><td>Destination (section 4), next acquisition number, and whether sequences go through the fast disk.</td></tr>
+  <tr><td>Pixels</td><td><b>16 bit</b>: 2 bytes per pixel, as acquired.<br><b>8 bit</b>: half the size, but only the 8 highest bits of the camera value are kept; faint signals become coarse. The camera value is about saved value &times; 2<sup>saved_value_shift</sup> (in the metadata). The live is not changed.</td></tr>
+  <tr><td>Frames</td><td>Number of frames of a sequence, up to 10 million. The size of one frame and of the sequence is shown next to it.</td></tr>
+  <tr><td>Save last image</td><td>Saves the last snap (or the last frame of the last sequence) as the next acquisition.</td></tr>
+  <tr><td>Acquire and save sequence</td><td>Acquires the frames and writes them to disk as they arrive (section 6).</td></tr>
+</table>
+<p>Size of one full frame, 16 bit / 8 bit (binning 2: divide by 4):</p>
+<table>
+  <tr><th>Camera</th><th>Sensor</th><th>One frame</th><th>1000 frames</th></tr>
+  <tr><td>Prime 95B</td><td>1200 &times; 1200</td><td>2.9 / 1.4 MB</td><td>2.9 / 1.4 GB</td></tr>
+  <tr><td>Orca Flash4</td><td>2048 &times; 2048</td><td>8.4 / 4.2 MB</td><td>8.4 / 4.2 GB</td></tr>
+  <tr><td>FLIR Blackfly</td><td>2448 &times; 2048</td><td>10.0 / 5.0 MB</td><td>10 / 5 GB</td></tr>
+</table>
+
+<h2>6. Long sequences</h2>
+<ul>
+  <li>Frames are written to disk as they arrive, so nothing is kept in memory and the length is limited only by the disk.</li>
+  <li>A progress window shows the frame number, the frame rate and the time left. The image keeps refreshing about 10 times per second.</li>
+  <li><b>Stop</b> ends the sequence and keeps the frames already saved. If an error occurs, the frames taken before it are also kept; the message says where.</li>
+  <li>Files are split every ~10 GB, and each finished file is moved to D: during the acquisition.</li>
+  <li><b>Lost frames</b>: every camera checks its frame counter. If the PC falls behind the camera for too long, the sequence stops with &ldquo;Frames lost&rdquo;, and the frames before are saved.</li>
+  <li><b>Prime</b>: since 28/10/2026 the camera runs continuously, with no dead time between frames other than the readout. The camera time stamp of each frame is saved in <code>X_frames.csv</code>. The frame time is the exposure, or the readout (12.4 ms at full frame) if the exposure is shorter: up to 80 frames/s at full frame. Tested on 29/10/2026 with 10 000 frames at 80 frames/s and no frame lost. During a sequence the sensor is cleared only once at the start; the setting is put back afterwards.</li>
+  <li>The Prime will soon be connected through a PCIe card instead of USB (faster). Nothing changes in the interface.</li>
+</ul>
+<div class="box"><b>Example: 100 000 Prime frames at 100 ms, full frame.</b>
+<ul>
+  <li>288 GB in 16 bit (144 GB in 8 bit), about 2 h 50 min.</li>
+  <li>Written as 29 files of 10 GB on C:, each moved to D: as soon as it is finished.</li>
+  <li>The space check needs the full size free on both disks before starting.</li>
+</ul>
+For long runs, lock the focus (Perfect Focus) and let the setup stabilise first: the drift can reach 30&ndash;150 nm/min.</div>
+
+<h2 class="new">7. SLM (Thorlabs EXULUS-HD2)</h2>
+<figure class="half"><img src="img/slm.png" alt="SLM panel"></figure>
+<ul>
+  <li><b>Connect</b> checks that the SLM screen (HDMI) is seen by Windows.</li>
+  <li><b>Load image / .npy&hellip;</b>: a mask file (.png .bmp .tif .npy). The dialog opens in <code>Desktop\SLM_masks</code>, which holds ready-made masks: <code>two_vortex.png</code> and <code>diffraction_633nm_0.1deg_rot45.png</code>, a diagonal grating as the &ldquo;Diffraction&rdquo; pattern of the Thorlabs software (633 nm, deviation 0.1&deg;, rotation 45&deg;: period 45.3 px). Other masks can be added to the folder. It must be 1200 &times; 1920 with integer values 0&ndash;255. It is checked and previewed.</li>
+  <li>After choosing the file, a window asks whether to <b>link the mask to a calibration</b>, with one list per kind: <b>Align BFP</b> and <b>SLM phase</b>. Pick the calibration file in each (the newest is proposed, or <i>No calibration</i>) and click <b>Link</b>. A linked mask is corrected before it is shown and sent, in this order:
+    <ol><li><b>Align BFP</b>: each half of the SLM is moved by the offset measured for its channel, so the mask lands centred on the real BFP. The two halves move differently.</li>
+    <li><b>SLM phase</b> (for now the right half only, with the global curve of the right channel): the mask value g is read as the wanted phase 2&pi;&nbsp;g/255, and replaced by the gray level that really gives this phase on the SLM.</li></ol></li>
+</ul>
+<figure><img src="img/slm_link_dialog.png" alt="Link a calibration window"></figure>
+<figure class="half"><img src="img/slm_linked.png" alt="SLM panel with a linked calibration"><figcaption>Linked calibration (simulated file): the left half moved 31 px up, the right half 13 px down and 6 px left.</figcaption></figure>
+<ul>
+  <li>While a calibration is linked, the top-left corner of the display shows <b>Calibration linked: <i>file name</i></b>, one line per linked calibration (hover it to see the correction). <b>Calibration&hellip;</b> changes or removes the link at any time. Masks put by a calibration window are never corrected (the corner then says &ldquo;not applied to this mask&rdquo;).</li>
+  <li><b>Send to SLM</b> displays the previewed mask. <b>Blank (0)</b> loads an all-zero mask. <b>Send automatically after loading</b> sends each loaded mask at once.</li>
+  <li>The mask shown is saved with every image: the mask itself (as sent, corrected if linked) in <code>X_slm_masks\</code>, and its number for each frame (section 12). If a calibration corrected it, the calibration file is copied to <code>X_calibrations\</code>.</li>
+</ul>
+<div class="box">If the SLM has no optical effect (a grating does not move the spots) while everything looks fine on the PC, <b>reseat the HDMI cable at both ends</b> first. Windows can see the SLM screen through a bad connection while the image does not reach the panel.</div>
+
+<h2>8. Microscope (Nikon Ti-E)</h2>
+<figure class="half"><img src="img/microscope.png" alt="Microscope panel"></figure>
+<table>
+  <tr><th>Control</th><th>Use</th></tr>
+  <tr><td>Objective</td><td>Shown only, never changed from software. Position 3 is the Apo TIRF 100&times; NA 1.49 oil.</td></tr>
+  <tr><td>Light path</td><td>Eye / Left / Right / Left80, about 3 s per change. The box is <span style="color:#d32f2f"><b>red</b></span> when the light goes left, <span style="color:#388e3c"><b>green</b></span> when it goes right.</td></tr>
+  <tr><td>Cube (set by hand)</td><td>The turret is not motorised. Choose the cube in place so that it is saved with the images (default: cube 2, dichroic Di03-R405/488/561/635). It is remembered between sessions.</td></tr>
+  <tr><td>Focus</td><td><b>Z &minus; / Z +</b> by Step (max 100 &micro;m). <b>Go to</b> an absolute position (asks for confirmation beyond 100 &micro;m).</td></tr>
+  <tr><td>Stage</td><td>X &minus; / X + / Y + / Y &minus; by Step.</td></tr>
+  <tr><td>Perfect Focus</td><td><b>On</b> locks the focus: oil under the objective, sample near focus first. The status is <span style="color:#388e3c">green</span> when locked, orange when searching, red when out of range or in error. <b>Offset</b>: &minus; / + by Step move the focal plane while the focus is held; Target + <b>Set offset</b> for an absolute value.</td></tr>
+</table>
+<p>Positions are read every 0.5 s. The Perfect Focus needs the objective to be registered in the microscope (TiControl, see Troubleshooting).</p>
+
+<h2>9. Objective piezo (Thorlabs PPC001)</h2>
+<figure class="half"><img src="img/piezo.png" alt="Piezo panel"></figure>
+<ul>
+  <li><b>State</b>: loop mode, output voltage, position from the sensor.</li>
+  <li><b>Open loop</b>: Target and Step in volts. <b>Closed loop</b>: Target and Step in &micro;m, 0 to 450 &micro;m. The sensor reads about &minus;16 &micro;m at 0 V, so go to a positive position first. Switching between modes keeps the position.</li>
+  <li><b>Go to / &minus; / +</b>: each move waits until it is reached. A move larger than ~20 &micro;m asks for confirmation.</li>
+</ul>
+
+<h2>10. Filter wheels and shutters (Sutter Lambda 10-3)</h2>
+<ul>
+  <li><b>Wheel A (left)</b> and <b>Wheel B (right)</b>: choose a position, shown with its filter. The wheel moves at the speed next to it, from 0 (fastest) to 7 (slowest).</li>
+  <li><b>Shutter A / Shutter B</b>: state, and <b>Open</b> / <b>Close</b> button.</li>
+  <li>The rows appear after Connect, built from the configuration of the controller.</li>
+</ul>
+<table>
+  <tr><th>Position</th><th>Wheel A (left)</th><th>Wheel B (right)</th></tr>
+  <tr><td>1</td><td>690/40 (exc. 640)</td><td>617/40</td></tr>
+  <tr><td>2</td><td>607/36 (exc. 560)</td><td>MF469/35</td></tr>
+  <tr><td>3</td><td>520/70 (exc. 488)</td><td>525/50</td></tr>
+  <tr><td>5</td><td>open</td><td>&ndash;</td></tr>
+</table>
+<p class="small">Other positions: no filter registered. The list is in <code>filter_wheel.py</code> (FILTERS).</p>
+
+<h2 class="new">11. Calibration</h2>
+<p>The calibration buttons are in the <b>upper right corner</b> of the window, at the end of the toolbar row (&ldquo;Calibration:&rdquo;), whatever the arrangement of the panels: one button per calibration. Each calibration is for one light path of the microscope, and its button has the colour of that path: <span style="color:#d32f2f"><b>red = left</b></span>, <span style="color:#388e3c"><b>green = right</b></span>. Each button opens a step-by-step window. The rest of Bumblebee stays usable while it is open, for example to connect a device or look at a camera.</p>
+<table>
+  <tr><th>Step</th><th>What to do</th></tr>
+  <tr><td>1. Optical elements</td><td>Put the listed elements in the light path and tick each one. <b>Next</b> is enabled once all are ticked.</td></tr>
+  <tr><td>2. Devices</td><td>The devices the calibration needs: <span style="color:#388e3c"><b>connected</b></span> or <span style="color:#d32f2f"><b>not connected</b></span>, checked twice per second. Connect them with the <b>Connect</b> button of each line, or in their panel. <b>Next</b> is enabled once all are connected.</td></tr>
+  <tr><td>3. Light path</td><td>The microscope goes by itself to the light path of the calibration (left or right), shown in its colour; <b>Go to the &hellip; path</b> does it again. Choose the emission filter of that path (<b>Show the filter wheels</b>), then tick. <b>Next</b> is enabled once the microscope is on that path and the box is ticked.</td></tr>
+  <tr><td>4, 5&hellip;</td><td>The steps of the calibration: instructions, buttons acting on the panels (show a camera, start its live&hellip;), a status line, sometimes a box to tick before <b>Next</b>.</td></tr>
+</table>
+<p>Closing the window and clicking the button again starts from step 1.</p>
+<figure class="half"><img src="img/calibration_step1.png" alt="Calibration step 1"><figcaption>Align BFP, step 1: the optical elements to put in the light path.</figcaption></figure>
+<figure class="half"><img src="img/calibration_step2.png" alt="Calibration step 2"><figcaption>Step 2: the devices needed, here none connected yet.</figcaption></figure>
+<h3>Align BFP (<code>align_BFP</code>)</h3>
+<p>Goal: the real position of the two back focal planes (2 channels) on the SLM. <span style="color:#d32f2f"><b>Left path (red).</b></span></p>
+<table>
+  <tr><th>Step</th><th>What to do</th></tr>
+  <tr><td>1. Optical elements</td><td>A <b>half-wave plate before the SLM</b>, the <b>50/50 beam splitter</b>, and a <b>polarization analyzer before the Orca</b>.</td></tr>
+  <tr><td>2. Devices</td><td>Microscope, filter wheels, Prime, Orca, SLM connected.</td></tr>
+  <tr><td>3. Light path: Left (red)</td><td>The microscope goes to the left path by itself. Choose the emission filter of the left path (red) and tick.</td></tr>
+  <tr><td>4. Beads in focus on the Prime</td><td>Put the TetraSpeck beads sample (size 1) on the microscope. <b>Show the Prime</b>, <b>Start / stop Prime live</b>, focus on the beads, then tick &ldquo;The beads are in focus on the Prime&rdquo;. No Perfect Focus: it does not lock on TetraSpeck beads. <b>Next stops the Prime live.</b></td></tr>
+  <tr><td>5. Phase masks recorded on the Orca</td><td>The recording has 4 masks: the vortex, shifted along x, shifted along y, and the vortex in SLM half 0 only (it tells which disk is which half). <b>Show the Orca</b>, <b>Start / stop Orca live</b>: the two BFP disks must be visible and not saturated. To check a mask before recording, choose it in the list (vortex, shifted along x, shifted along y) and click <b>Show on the SLM</b>: it is put on the SLM with the current settings and stays there, so you can look at it on the Orca live. Then <b>Record the vortex masks</b>: in each half of the SLM, a vortex whose phase grows by &ldquo;phase around the centre&rdquo; (10&pi; by default) over one turn. On the Orca it gives contrast lines pointing to the vortex centre (5 periods for 10&pi;). Then the same vortex shifted along x and along y (&ldquo;vortex shift&rdquo;, 50 px), which gives the scale and rotation between SLM and Orca. Only the shape matters: gray level 255 is taken as 2&pi; (the exact SLM phase will come from a separate calibration).
+    The recording is saved as an acquisition in <code>D:\BUMBLEBEE_calibration\align_BFP\YYYY_MM_DD</code> (whatever the experiment name), with the masks and the mask of each frame. The Orca live is paused meanwhile, and the SLM mask shown before is put back after. <b>Next</b> once the vortex masks are recorded.</td></tr>
+  <tr><td>6. Position of the BFPs on the SLM</td><td><b>Analyse the recording</b> (the one just made; <b>Analyse another recording&hellip;</b> for an older one), about 20 s per disk, Bumblebee stays usable. For each BFP disk on the Orca, its edge is fitted by an ellipse and the centre of the 5-fold vortex pattern is fitted; the shifted vortices give the scale and rotation between SLM and Orca, so the BFP centre is found in SLM pixels. The result (BFP centre row / column and radius for each SLM half, with statistical and systematic errors) is shown with a figure and written next to the recording: <code>X_bfp_calibration_YYYY_MM_DD_HHMMSS.json</code> and <code>.png</code> (date and time of the analysis, so a new analysis never overwrites an earlier one). <b>Link to the SLM masks</b> links it to the SLM panel: the masks loaded there are then corrected with it (section 7), and it is copied with each acquisition.</td></tr>
+</table>
+<figure class="half"><img src="img/calibration_lightpath.png" alt="Align BFP step 3"><figcaption>Step 3: the microscope is on the left path, the filter is ticked (simulated microscope).</figcaption></figure>
+<figure class="half"><img src="img/calibration_step3.png" alt="Align BFP step 4"><figcaption>Step 4, with the Prime live running (before the light path step was added).</figcaption></figure>
+<figure class="half"><img src="img/calibration_step5.png" alt="Align BFP step 6"><figcaption>Step 5: the vortex shifted along x put on the SLM before recording (here with a simulated Orca and SLM).</figcaption></figure>
+<figure class="half"><img src="img/calibration_step6.png" alt="Align BFP step 6"><figcaption>Step 6 after the analysis (simulated recording with two disks).</figcaption></figure>
+<figure class="half"><img src="img/bfp_analysis_real.png" alt="BFP analysis"><figcaption>First real recording (29 October 2026): edge points (green kept, red left out: dust, neighbouring disk), ellipse and its centre (yellow), vortex centres (red; orange and blue: shifted along x and y). BFP centre = vortex centre + (0.3, &minus;30.9) SLM px.</figcaption></figure>
+
+<h3>SLM phase (<code>slm_phase</code>)</h3>
+<p>Goal: the phase applied by the SLM for each gray level 0&ndash;255, at every Orca pixel of the BFPs. The recording is the same whatever the channels; the analysis (step 7) takes by default only the disk centred in the <b>right half of the Orca</b> (one channel, the whole disk); choose <b>Both channels</b> there to analyse the two. <span style="color:#d32f2f"><b>Left path (red).</b></span> Same optics as Align BFP; the analyzer before the Orca is the <b>quarter-wave plate in its rotation mount, then the polarizer</b>.</p>
+<table>
+  <tr><th>Step</th><th>What to do</th></tr>
+  <tr><td>1&ndash;3</td><td>Optical elements, devices, left light path and emission filter, as for Align BFP.</td></tr>
+  <tr><td>4. Wavelength</td><td>Enter the wavelength of the light reaching the Orca (centre of the emission filter). It gives the retardance of the quarter-wave plate used by the analysis.</td></tr>
+  <tr><td>5. Beads in focus on the Prime</td><td>As for Align BFP.</td></tr>
+  <tr><td>6. Gray level ramp</td><td>The <b>exposure</b> box sets the Orca exposure time (same setting as in the Orca panel; also in the recording step of Align BFP). First check on the Orca live, with a few flat masks (<b>gray</b> + <b>Show flat mask on the SLM</b>) and a few plate angles, that the disks are not saturated. Then <b>Record the remaining angles</b>: for each angle (0, 40&hellip; 320&deg;) a window says <b>&ldquo;Turn the quarter-wave plate to X&deg;&rdquo;</b>; turn it by hand and click OK. The SLM then shows the flat masks 0, step, 2&times;step&hellip; 255 and the Orca takes one image of each. The <b>gray step</b> (default 4: 65 images per angle) is next to the record buttons; it must be the same for all angles (changing it after some angles starts a new run, after a question). Cancel stops; the angles left can be recorded later. <b>Record the selected angle again</b> replaces one angle. Keep the same Orca settings for all angles. Saved in <code>D:\BUMBLEBEE_calibration\slm_phase\YYYY_MM_DD</code>.</td></tr>
+  <tr><td>7. Phase of each gray level</td><td><b>Analyse the recording</b> (Bumblebee stays usable). For each Orca pixel, the polarization at each gray level is measured from the 9 plate angles; the phase of gray level g is how far the polarization has turned (on the Poincar&eacute; sphere) about the axis of the SLM from gray level 0. Shown: plate zero offset, and for each disk the phase at 255, the <b>gray level of 2&pi;</b>, the modulation. Written next to the recordings: <code>.json</code> (summary), <code>.npz</code> (phase of every gray level for every pixel), <code>.png</code>.</td></tr>
+</table>
+<figure class="half"><img src="img/slm_phase_record.png" alt="SLM phase step 6"><figcaption>Step 6 after the 9 angles, gray step 4 (simulated Orca and SLM, one disk).</figcaption></figure>
+<figure><img src="img/slm_phase_analysis.png" alt="SLM phase step 7"><figcaption>Step 7 on the simulated recording: same curve for both disks, 2&pi; at gray 227.</figcaption></figure>
+
+<h2 class="new">12. Files and metadata: reading the data</h2>
+<h3>Metadata</h3>
+<p>The metadata of acquisition X is in <code>X.json</code>, readable in any text editor, and in the first image of each TIFF file. It is recorded when the images are taken, not when they are saved: for a snap saved later, it is the state at the snap. It has 4 sections, in this order:</p>
+<table>
+  <tr><th>Section</th><th>Content</th></tr>
+  <tr><td><code>acquisition</code></td><td>Number X, camera, date, number of frames, how the frame times were measured, how the pixels are saved (16 or 8 bit), date of the first frame, list of TIFF files, frame-times file.</td></tr>
+  <tr><td><code>devices</code></td><td><code>connected</code>: every device, connected or not (SLM, the 3 cameras, microscope, piezo, filter wheels). Then the state of each side device, with <code>connected</code> again:
+    <ul><li>microscope: cube (set by hand, always saved), objective, light path, z, xy, Perfect Focus;</li>
+    <li>objective piezo: serial number, loop mode, voltage, position;</li>
+    <li>filter wheels: filter of each wheel, shutters open or closed.</li></ul></td></tr>
+  <tr><td><code>slm</code></td><td>Connected or not, link, monitor, size, settle time, name of the mask shown. Then the masks used in this acquisition (see below), and which mask each frame had.</td></tr>
+  <tr><td><code>camera</code></td><td>The main settings first: serial number, exposure, sensor size, ROI, binning, bit depth, readout port / speed / gain, exposure and clear modes, temperature. Then <code>advanced</code>: every parameter of the advanced settings window, and for the Prime its image processing (<code>post_processing</code>: despeckle filters, QuantView).</td></tr>
+</table>
+<h3>SLM masks (<code>X_slm_masks\</code>)</h3>
+<ul>
+  <li>Every mask shown on the SLM during acquisition X is saved once, as <code>X_slm_masks\0.png</code>, <code>1.png</code>&hellip;, numbered in the order they first appear. A mask shown again keeps its number. If the SLM keeps the same mask all along, there is a single <code>0.png</code>.</li>
+  <li>The mask of each frame: column <code>slm_mask</code> of <code>X_frames.csv</code> for sequences, or <code>slm.mask_of_each_frame</code> in the .json for snaps. It holds the mask number, or <code>none</code> if no mask was shown or the SLM was not connected.</li>
+  <li><code>slm.masks</code> in the .json gives, for each mask: its number, file, name (as loaded in the SLM panel) and the first frame where it appeared.</li>
+  <li>The .png files can be loaded back in the SLM panel.</li>
+</ul>
+<h3>Frame times (<code>X_frames.csv</code>)</h3>
+<table>
+  <tr><th>Column</th><th>Meaning</th></tr>
+  <tr><td>frame</td><td>Frame number in the acquisition (0, 1&hellip;)</td></tr>
+  <tr><td>pc_time_s</td><td>PC clock when the frame arrived, in s from the first frame (the date of the first frame is in the .json)</td></tr>
+  <tr><td>camera_frame</td><td>Frame counter of the camera (1, 2&hellip;): consecutive if no frame was lost</td></tr>
+  <tr><td>camera_time_s</td><td>Prime: camera time stamp of the start of the exposure, in s. Use this for frame rates and vibration analysis.</td></tr>
+  <tr><td>slm_mask</td><td>Number of the SLM mask shown during the frame (file <code>X_slm_masks\N.png</code>), or <code>none</code></td></tr>
+</table>
+<h3>Opening the data</h3>
+<ul>
+  <li><b>Fiji</b>: drag the <code>.tiff</code> file in, or File &gt; Import &gt; Bio-Formats, &ldquo;Use virtual stack&rdquo; for very large files. A split sequence: open <code>X_0.tiff</code>, <code>X_1.tiff</code>&hellip; one after the other.</li>
+  <li><b>Python</b>:
+<pre><code>import json, numpy as np, tifffile
+from PIL import Image
+meta = json.load(open("3.json"))
+frames = np.concatenate([tifffile.imread(f) for f in meta["acquisition"]["files"]])
+exposure = meta["camera"]["exposure_time_ms"]
+clear_mode = meta["camera"]["advanced"]["CLEAR_MODE"]
+z = meta["devices"]["microscope"].get("z_um")      # None if the microscope was not connected
+table = np.genfromtxt("3_frames.csv", delimiter=",", names=True, dtype=None, encoding=None)
+times, masks = table["pc_time_s"], table["slm_mask"]   # mask number of each frame, or "none"
+mask_0 = np.array(Image.open("3_slm_masks/0.png"))</code></pre></li>
+  <li>Acquisitions saved before 29/10/2026 have a flat .json (all keys at the top level, no advanced parameters, SLM mask name only).</li>
+  <li>The acquisitions of 27/10/2026 were renamed to this scheme. The old names are listed in <code>2026_10_27_test\renamed_files.txt</code> and in each .json (<code>original_file_name</code>).</li>
+</ul>
+
+<h2>13. Troubleshooting</h2>
+<table>
+  <tr><th>Problem</th><th>What to do</th></tr>
+  <tr><td>Camera: every snap / live gives &ldquo;Frame timeout&rdquo;</td><td>The camera link is stuck, typically after a program holding it was killed. Close Bumblebee, switch the camera off for 10 s and on again, then reconnect.</td></tr>
+  <tr><td>Orca needed by MetaMorph or HCImage</td><td><b>Disconnect</b> the Orca in Bumblebee, use the other program, close it, then <b>Connect</b> again in Bumblebee (it restarts the camera library; no need to restart Bumblebee).</td></tr>
+  <tr><td>&ldquo;Frames lost&rdquo; during a sequence</td><td>The PC could not keep up. Check that sequences are written on C: (staging) and that no other program writes heavily to the disk. Reduce the frame rate, the ROI, or use 8 bit.</td></tr>
+  <tr><td>&ldquo;Not enough space on C: / D:&rdquo;</td><td>Free some space, or acquire fewer frames, 8-bit pixels or a smaller ROI. Files still being moved count as used.</td></tr>
+  <tr><td>Microscope: &ldquo;No device with label TILightPath&rdquo;, or nothing found although the stand works by hand</td><td>Nikon's server is stale. Close Bumblebee and TiControl, end <b>NikonTiS.exe</b> in Task Manager &gt; Details, then reconnect.</td></tr>
+  <tr><td>Perfect Focus: &ldquo;Unsupported objective lens&rdquo;</td><td>The objective registration was lost, which can happen after a power cycle. Disconnect the microscope in Bumblebee, open TiControl &gt; Setting &gt; Component &gt; Nosepiece, set position 3 = Apo TIRF 100&times; NA 1.49 Oil, Send, OK.</td></tr>
+  <tr><td>SLM does nothing optically</td><td>Reseat the HDMI cable at both ends, then test with a grating: look for the first-order spot after the SLM.</td></tr>
+  <tr><td>The window is slow during the live</td><td>Long exposures or two cameras in live: the frames are read in the main window (see Known limits).</td></tr>
+  <tr><td>A Prime setting was changed in Advanced settings and you don't know which</td><td>Tick <b>Changed only</b>: the parameters different from the normal state are listed, highlighted. <b>Reset to defaults&hellip;</b> puts them all back. Closing the window does not undo a change.</td></tr>
+  <tr><td>Bumblebee stops with an error</td><td>The console window stays open with the message. Note it, then restart from the desktop icon.</td></tr>
+</table>
+
+<h2>14. Known limits</h2>
+<ul>
+  <li>The lives and sequences read the frames in the main window: with long exposures, or two cameras in live, the window reacts slowly.</li>
+  <li>The Prime &ldquo;Advanced settings&rdquo; window shows two long text parameters (system and driver info) as &ldquo;text too long to be read&rdquo;: reading them crashed the program. The Orca window has not been tested on the camera yet.</li>
+  <li>Default column, highlighting, Reset and descriptions exist for the Prime only, not yet for the Orca and the FLIR.</li>
+  <li>The saving of the SLM masks with each frame was tested with a stand-in SLM in a test program; check it on the first real acquisition with a mask.</li>
+  <li>Reading all the camera parameters for the metadata adds about 0.5 s before each Prime snap or sequence.</li>
+  <li>The microscope move buttons have not yet been tested from the interface (the same moves work from Python).</li>
+  <li>The galvos (Pangolin) are not in the interface yet.</li>
+</ul>
+
+<h2>15. Version history</h2>
+<table>
+  <tr><th>Date</th><th>Changes</th></tr>
+  <tr><td>30/10/2026</td><td>
+    <ul>
+      <li>SLM masks can be linked to an Align BFP calibration: each SLM half moved onto its BFP, &ldquo;Calibration linked&rdquo; in the corner, calibration file copied with each acquisition (<code>X_calibrations\</code>).</li>
+      <li>Align BFP result files named with the date and time of the analysis.</li>
+      <li>New calibration <b>SLM phase</b>: phase of each gray level for each Orca pixel (quarter-wave plate turned by hand, 9 angles).</li>
+    </ul></td></tr>
+  <tr><td>29/10/2026</td><td>
+    <ul>
+      <li>Calibration buttons (upper right corner) with a first calibration, Align BFP: optical elements to place, then check of the devices needed.</li>
+      <li>Prime sequences tested on the camera: 80 frames/s at full frame, 10 000 frames with no loss. The sensor is cleared once per sequence instead of before each frame (it was 21 frames/s).</li>
+      <li>Prime advanced settings: crash fixed; Default column (normal state of the camera, temperature setpoint &minus;15 &deg;C), changed values highlighted, &ldquo;Changed only&rdquo;, <b>Reset to defaults</b>, a description of each parameter. Trigger mode changes now take effect.</li>
+      <li>Prime despeckle filters turned off at every connection (raw data).</li>
+      <li>Metadata in 4 sections (acquisition, devices, SLM, camera), with all the advanced camera parameters, the connection state of every device, and the SLM mask of each frame (masks saved in <code>X_slm_masks\</code>). A snap records the state at the snap, not at saving.</li>
+    </ul></td></tr>
+  <tr><td>28/10/2026</td><td>
+    <ul>
+      <li>Continuous Prime sequences (camera buffer, lost-frame check, camera time stamps).</li>
+      <li>File names <code>X_Y.tiff</code>, <code>X.json</code>, <code>X_frames.csv</code>; long sequences split into files of ~10 GB, each moved to D: as soon as it is finished; up to 10 million frames.</li>
+      <li>First version of this manual.</li>
+    </ul></td></tr>
+  <tr><td>27/10/2026</td><td>Filter wheels and shutters, FLIR camera, filter cube menu, dockable panels, staging on C: and moves to D:, free-space check, 8-bit saving.</td></tr>
+</table>
+<p class="small">Technical details: <code>setup_gui_README.txt</code> and the README of each device in <code>Documents\GitHub\interface_setup</code>. The interface is about 4 600 lines of Python in 9 files (setup_gui.py 1 760, camera.py 660, saving.py 480, then one file per device). This manual is generated by <code>manual\make_manual.py</code>.</p>
+</body>
+</html>

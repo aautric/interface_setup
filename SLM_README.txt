@@ -93,5 +93,14 @@ Checked on the setup (2026-10-26)
     and its library is not even loaded; the display (HDMI, cgh_display.dll)
     is not affected. To use USB again: SLM(use_usb=True), in a small script
     that loads nothing else, or with a newer Thorlabs EXULUS SDK.
+  - 2026-10-27: the SLM had no optical effect (a grating did not move the
+    beads) while everything looked fine from the PC: Windows saw the SLM
+    screen, the pattern was on it (screen capture identical to the pattern),
+    and over USB the SLM answered ACK with the internal test pattern off,
+    gamma table #1, no flip. The cause was the HDMI connection: Windows can
+    read the SLM identity (EDID) through a bad cable / connector while the
+    image does not reach the panel. If the SLM does nothing optically, check
+    and reseat the HDMI cable first (both ends), then test with a grating
+    (first-order spot on a card after the SLM).
 Still to check on the setup:
   - settle_time: measure how long the SLM takes to settle after a new mask

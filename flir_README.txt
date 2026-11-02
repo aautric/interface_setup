@@ -17,12 +17,18 @@ Setup:
      the camera to ~3 frames/s.
 
 
+If a program using the camera is killed during an acquisition, the camera
+stays streaming and its settings are locked ("Cannot set property ...").
+connect() then stops that acquisition and applies the settings again (tested
+by killing a program in live). Unplugging / plugging the USB cable also works.
+
 Settings at connection (DEFAULT_SETTINGS in flir.py)
 -----------------------------------------------------
 The camera starts with automatic gain and gamma 0.8, not suited to
 measurements. connect() sets:
   Exposure Auto Off, Gain Auto Off, Gain 0 dB, Gamma off,
-  ADC 12 bit, Pixel Format Mono16 (12-bit values in uint16 images)
+  ADC 12 bit, Pixel Format Mono16 (uint16 images: the 12-bit values are
+  scaled to 16 bit, i.e. multiples of 16, 0 to 65520; in 10 bit multiples of 64)
 
 
 The Flir class
@@ -38,18 +44,34 @@ Same methods as the Camera class of camera.py (Prime 95B) and Orca:
                                saved as roi_camera in the metadata
   reset_roi()                  full frame, binning 1
   set_binning(n)               1 or 2 (the ROI is kept)
-  snap(), acquire_sequence(n), start_live() / get_live_frame() / stop_live()
-  save(images, folder, name), snap_and_save(), acquire_sequence_and_save()
+  snap(), start_live() / get_live_frame() / stop_live()
+  acquire_sequence(n, progress=None, writer=None)
+                               n images, 3D numpy array (n, y, x);
+                               progress(done, n, frame) is called after each
+                               frame (returning False stops); with a
+                               saving.SequenceWriter the frames are written to
+                               the file as they arrive (not kept in memory)
+                               (Micro-Manager buffer 250 MB = 25 full frames:
+                               an error "Frames lost" if the saving is slower)
+  save(images, folder), snap_and_save()   next acquisition X of folder:
+                               X_0.tiff + X.json (saving.py, as camera.py)
+  acquire_sequence_and_save(n, folder)
+                               written to the TIFF as acquired; returns its path
   get_metadata()               exposure, gain, pixel format, ADC, ROI,
                                binning, gamma, black level, trigger mode
   temperature                  None (not available through Micro-Manager)
+  get_parameters()             the ~30 properties of the Micro-Manager driver
+                               (the camera has more GenICam features: they
+                               would need another library, e.g. Harvesters
+                               with FLIR's GenTL producer, installed)
+  set_parameter(name, value)   set one of them by name (e.g. "Black Level", 1)
   with Flir() as cam:          connect() / close()
 
     from flir import Flir
 
     with Flir(exposure_time=50) as cam:
         image = cam.snap()
-        cam.save(image, r"D:\data\2026-10-27", name="flir")
+        cam.save(image, r"D:\data\2026-10-27")
 
 Quick check from a terminal (setup_env): python flir.py
 
@@ -66,3 +88,6 @@ Checked on the camera (2026-10-27)
   - GUI live: get_live_frame(wait=False) returns None when no new frame has
     arrived, so the window is not blocked between two frames (it was blocked
     ~230 ms per refresh at 4 fps)
+
+save(), acquire_sequence_and_save(): pixel_bits=16 (as acquired) or 8 (1 byte
+per pixel, the 8 highest bits of the values: see saving.to_saved_pixels).

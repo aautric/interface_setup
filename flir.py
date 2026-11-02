@@ -15,10 +15,9 @@ import os
 import time
 from datetime import datetime
 
-import numpy as np
 import pymmcore
 
-from saving import save_images
+from saving import FrameCollector, SequenceWriter, save_images
 
 MM_PATH = r"C:\Program Files\Micro-Manager-2.0"
 DEVICE = "Blackfly"  # Micro-Manager label of the camera
@@ -26,7 +25,7 @@ EXPOSURE_TIME = 20   # ms
 TIMEOUT = 5000       # ms, maximum wait for a frame (on top of the exposure time)
 
 # Settings applied at connection, for measurements: fixed gain, no gamma, 12-bit data
-# (Mono16 holds the 12-bit values of the ADC).
+# (Mono16 holds the 12-bit values of the ADC, scaled to 16 bit: multiples of 16).
 DEFAULT_SETTINGS = [
     ("Exposure Auto", "Off"),
     ("Gain Auto", "Off"),
@@ -89,8 +88,15 @@ class Flir:
             core.loadDevice(DEVICE, "SpinnakerCamera", name)
             core.initializeDevice(DEVICE)
             core.setCameraDevice(DEVICE)
-            for prop, value in DEFAULT_SETTINGS:
-                core.setProperty(DEVICE, prop, value)
+            try:
+                self._apply_default_settings(core)
+            except RuntimeError:
+                # camera left streaming by a program that was killed during an acquisition:
+                # its settings are locked until the acquisition is stopped
+                core.startContinuousSequenceAcquisition(0)
+                time.sleep(0.2)
+                core.stopSequenceAcquisition()
+                self._apply_default_settings(core)
             core.setExposure(self.exposure_time)
         except Exception:
             core.unloadAllDevices()
@@ -101,6 +107,11 @@ class Flir:
         self.sensor_size = (core.getImageWidth(), core.getImageHeight())
         print(f"Connected to camera {self.name} {self.serial_number} "
               f"(sensor {self.sensor_size}, {core.getImageBitDepth()} bits).")
+
+    @staticmethod
+    def _apply_default_settings(core):
+        for prop, value in DEFAULT_SETTINGS:
+            core.setProperty(DEVICE, prop, value)
 
     def is_connected(self):
         return self.core is not None
@@ -161,6 +172,35 @@ class Flir:
             x, y, width, height = self.roi
             self.core.setROI(x // b, y // b, width // b, height // b)
 
+    # ---------- all parameters (advanced settings) ----------
+
+    def get_parameters(self):
+        """
+        All the properties of the camera exposed by the Micro-Manager Spinnaker adapter
+        (a subset of the camera's GenICam features), as a list of dictionaries:
+        name, value, writable, kind ("enum", "int", "float", "text"), options (enum),
+        min / max (numbers with limits), live (True).
+        Exposure, ROI and binning are better changed with set_exposure / set_roi / set_binning.
+        """
+        core, parameters = self.core, []
+        kinds = {pymmcore.Float: "float", pymmcore.Integer: "int", pymmcore.String: "text"}
+        for name in core.getDevicePropertyNames(DEVICE):
+            entry = {"name": name, "value": core.getProperty(DEVICE, name),
+                     "writable": not core.isPropertyReadOnly(DEVICE, name), "live": True,
+                     "kind": kinds.get(core.getPropertyType(DEVICE, name), "text")}
+            options = list(core.getAllowedPropertyValues(DEVICE, name))
+            if options:
+                entry.update(kind="enum", options=options)
+            elif core.hasPropertyLimits(DEVICE, name):
+                entry.update(min=core.getPropertyLowerLimit(DEVICE, name),
+                             max=core.getPropertyUpperLimit(DEVICE, name))
+            parameters.append(entry)
+        return parameters
+
+    def set_parameter(self, name, value):
+        """Set a camera property by name (as given by get_parameters)."""
+        self.core.setProperty(DEVICE, name, str(value))
+
     # ---------- acquisition ----------
 
     def snap(self, exposure_time=None):
@@ -170,20 +210,28 @@ class Flir:
         self.core.snapImage()
         return self.core.getImage()
 
-    def acquire_sequence(self, n_frames, exposure_time=None):
-        """Acquire n_frames images and return them as a 3D numpy array (n_frames, y, x)."""
+    def acquire_sequence(self, n_frames, exposure_time=None, progress=None, writer=None):
+        """
+        Acquire n_frames images and return them as a 3D numpy array (n_frames, y, x).
+        progress: optional function progress(done, n_frames, frame) called after each frame;
+        if it returns False the acquisition stops and the frames already taken are returned.
+        writer: optional saving.SequenceWriter; the frames are then written to its file as
+        they arrive instead of being kept in memory, and only the last frame is returned.
+        """
         exposure_time = self._apply_exposure(exposure_time)
         self.last_metadata = self.get_metadata(exposure_time, n_frames=n_frames)
+        collect = FrameCollector(self.last_metadata, writer)
         core = self.core
+        # stopOnOverflow: an error instead of silently lost frames if they are read too slowly
         core.startSequenceAcquisition(n_frames, 0, True)
-        frames = []
         try:
-            while len(frames) < n_frames:
+            while collect.count < n_frames:
                 self._wait_for_image(exposure_time)
-                frames.append(core.popNextImage())
+                if not collect(core.popNextImage(), n_frames, progress):
+                    break
         finally:
             core.stopSequenceAcquisition()
-        return np.array(frames)
+        return collect.result()
 
     def start_live(self, exposure_time=None):
         """Start continuous acquisition; read the images with get_live_frame()."""
@@ -218,6 +266,10 @@ class Flir:
     def _wait_for_image(self, exposure_time):
         end = time.time() + (exposure_time + self.timeout) / 1000
         while self.core.getRemainingImageCount() == 0:
+            if self.core.isBufferOverflowed():
+                raise RuntimeError("Frames lost: they arrived faster than they were saved "
+                                   "(the circular buffer of the camera overflowed). Use a "
+                                   "faster disk, a smaller ROI or a longer exposure.")
             if time.time() > end:
                 raise RuntimeError("Frame timeout: no image from the FLIR camera.")
             time.sleep(0.002)
@@ -239,6 +291,9 @@ class Flir:
             "roi_x_y_width_height": list(self.roi) if self.roi else "full frame",
             "roi_camera": list(self.core.getROI()),  # x, y, w, h in binned pixels, after rounding
             "binning": [self.binning, self.binning],
+            # range of the values: in Mono16 the 10 / 12-bit values are scaled to 16 bit
+            # (multiples of 16 in 12 bit)
+            "bit_depth": 8 if prop("Pixel Format") == "Mono8" else 16,
             "pixel_format": prop("Pixel Format"),
             "adc_bit_depth": prop("ADC Bit Depth"),
             "gain_dB": float(prop("Gain")),
@@ -246,32 +301,47 @@ class Flir:
             "gamma_enabled": prop("Gamma Enabled"),
             "black_level": float(prop("Black Level")),
             "trigger_mode": prop("Trigger Mode"),
+            "advanced": self.get_advanced_metadata(),
         }
 
-    def save(self, images, folder, name="image", metadata=None, extra_metadata=None):
+    def get_advanced_metadata(self):
+        """All the camera parameters {name: value}, for the metadata."""
+        try:
+            return {p["name"]: p["value"] for p in self.get_parameters()}
+        except Exception as error:
+            return {"error": f"not readable: {error}"}
+
+    def save(self, images, folder, metadata=None, extra_metadata=None, pixel_bits=16, index=None,
+             slm_mask=None):
         """
-        Save a snap (2D array) or a sequence (3D array) as TIFF + .json metadata (see saving.py).
+        Save a snap (2D array) or a sequence (3D array) in folder as acquisition X:
+        X_0.tiff + X.json (see saving.py), the metadata also in the TIFF.
         metadata: acquisition metadata; if None, the one of the last snap / sequence.
-        extra_metadata: dictionary of anything else to keep (SLM mask, microscope state...).
+        extra_metadata: state of the other devices and anything else to keep: "devices",
+            "slm" sections and other keys (see saving.organize_metadata).
+        pixel_bits: 16 (as acquired) or 8 (1 byte per pixel: see saving.to_saved_pixels).
+        index: acquisition number X; None = the next free one in folder.
+        slm_mask: (pattern, name) of the SLM mask shown when the images were taken, or None.
         Returns the path of the TIFF file.
         """
         if metadata is None:
             metadata = self.last_metadata or self.get_metadata()
-        metadata = dict(metadata)
-        if extra_metadata:
-            metadata.update(extra_metadata)
-        return save_images(images, folder, name, metadata)
+        return save_images(images, folder, metadata, pixel_bits, index, extra_metadata, slm_mask)
 
-    def snap_and_save(self, folder, name="image", exposure_time=None, extra_metadata=None):
+    def snap_and_save(self, folder, exposure_time=None, extra_metadata=None):
         """Acquire one image and save it. Returns (image, tif_path)."""
         image = self.snap(exposure_time)
-        return image, self.save(image, folder, name, extra_metadata=extra_metadata)
+        return image, self.save(image, folder, extra_metadata=extra_metadata)
 
-    def acquire_sequence_and_save(self, n_frames, folder, name="sequence",
-                                  exposure_time=None, extra_metadata=None):
-        """Acquire n_frames images and save them in one TIFF. Returns (stack, tif_path)."""
-        stack = self.acquire_sequence(n_frames, exposure_time)
-        return stack, self.save(stack, folder, name, extra_metadata=extra_metadata)
+    def acquire_sequence_and_save(self, n_frames, folder, exposure_time=None, extra_metadata=None,
+                                  pixel_bits=16):
+        """
+        Acquire n_frames images as the next acquisition X of folder (X_Y.tiff files written as
+        they arrive, X_frames.csv, X.json). pixel_bits: 16 or 8. Returns the first TIFF path.
+        """
+        with SequenceWriter(folder, extra_metadata, pixel_bits=pixel_bits) as writer:
+            self.acquire_sequence(n_frames, exposure_time, writer=writer)
+        return writer.tif_path
 
     # ---------- closing ----------
 

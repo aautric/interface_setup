@@ -28,12 +28,23 @@ are listed in FILTER_CUBES (1 original cube, 2 dichroic 3 mm
 Di03-R405/488/561/635-t3-25x36) and the one in place is chosen by hand in the
 GUI (default DEFAULT_FILTER_CUBE = cube 2).
 
-Objective names: the Ti stores a name per nosepiece position (set in Nikon's
-software). Position 3 holds the 100x NA 1.49 oil objective but is stored as
-"Unknown": OBJECTIVE_LABELS in nikon_ti.py corrects the name shown and saved
-("3-Apo TIRF 100x NA 1.49 Oil"). This does not change the microscope's own
-table: the Perfect Focus answers "Unsupported objective lens" until the
-objective is registered at position 3 in NIS-Elements / TiControl.
+Objective names: the Ti stores the objective of each nosepiece position, and
+the Perfect Focus uses it ("Unsupported objective lens" if the position is
+not registered). To change it: TiControl (C:/Program Files (x86)/Nikon/
+TiControl/TiControl.exe, microscope disconnected in the GUI) > Setting >
+Component > Nosepiece, choose the objective of each position, Send, OK.
+Done on 2026-10-27: position 3 = Apo TIRF 100x NA 1.49 Oil (it was registered
+at position 1). After a power cycle the same day the Ti showed "3-Unknown"
+again: the registration can be lost, redo it if the PFS says "Unsupported
+objective lens".
+OBJECTIVE_LABELS in nikon_ti.py fixes the name shown/saved, whatever the Ti
+stores: position 3 = "3-Apo TIRF 100x NA 1.49 Oil" (the only objective used
+on this setup). It does not change the microscope, so it does not make the
+PFS work by itself.
+
+If the stand works by hand but neither TiControl nor this program sees it
+(model "(null)", no devices): close TiControl / the GUI, end NikonTiS.exe in
+Task Manager > Details (Nikon's server, restarted on demand), reconnect.
 
   connect() / close()          load / release the microscope (it keeps its state)
   objectives, get_objective(), set_objective(x)
@@ -68,5 +79,10 @@ Status (2026-10-26)
 -------------------
   - Connection and reading of all the devices checked on the microscope.
   - Moves (objective, light path, focus, stage, PFS) not run yet.
+  - 2026-10-29: a light path change from Bumblebee (Align BFP calibration)
+    gave "Wait for device TILightPath timed out after 5000ms" (Micro-Manager
+    default timeout). The state devices now wait up to STATE_TIMEOUT (20 s)
+    for the move, then check the label reached (_wait_state). To confirm on
+    the microscope.
   - The XY stage reads (0, 0): to check that it is really the motorised stage
     used on the setup.

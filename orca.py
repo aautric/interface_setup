@@ -13,10 +13,9 @@ Same methods as the Camera class of camera.py, so both cameras are used the same
 
 from datetime import datetime
 
-import numpy as np
 from pylablib.devices import DCAM
 
-from saving import save_images
+from saving import FrameCollector, SequenceWriter, save_images
 
 EXPOSURE_TIME = 20  # ms
 TIMEOUT = 5000      # ms, maximum wait for a frame (on top of the exposure time)
@@ -65,9 +64,12 @@ class Orca:
 
     def connect(self):
         """Find the camera and open it."""
+        # fresh DCAM start: a DCAM state kept from an earlier connection is not valid any more
+        # once another program (MetaMorph, HCImage) has used the camera (only one Orca here)
+        DCAM.DCAM.restart_lib()
         if DCAM.get_cameras_number() <= self.index:
             raise RuntimeError("No DCAM camera found. Check that the camera is on, its cable "
-                               "(frame grabber / USB 3) and that HCImage is closed.")
+                               "(frame grabber / USB 3) and that HCImage / MetaMorph are closed.")
         self.cam = DCAM.DCAMCamera(idx=self.index)
         info = self.cam.get_device_info()
         self.name = f"{info.model} {info.serial_number}"
@@ -143,6 +145,47 @@ class Orca:
         """'fast' (standard scan) or 'slow' (low noise scan)."""
         self.cam.set_readout_speed(speed)
 
+    # ---------- all parameters (advanced settings) ----------
+
+    def get_parameters(self):
+        """
+        All the DCAM attributes of the camera, as a list of dictionaries:
+        name, value, writable, kind ("enum", "int", "float", "other"), options (enum),
+        min / max (numbers), live (always True for DCAM).
+        Exposure, ROI and binning are better changed with set_exposure / set_roi / set_binning.
+        """
+        parameters = []
+        for name, attribute in sorted(self.cam.get_all_attributes().items()):
+            entry = {"name": name, "writable": attribute.writable, "kind": "other",
+                     "value": None, "live": True}
+            try:
+                if attribute.kind == "enum":
+                    attribute.update_limits()
+                    entry.update(kind="enum", options=list(attribute.labels),
+                                 value=attribute.as_text() if attribute.readable else None)
+                elif attribute.kind in ("int", "float"):
+                    entry.update(kind=attribute.kind, min=attribute.min, max=attribute.max,
+                                 value=attribute.get_value() if attribute.readable else None)
+                else:
+                    entry.update(value=attribute.get_value() if attribute.readable else None,
+                                 writable=False)
+            except Exception as error:
+                entry.update(value=f"(not readable: {error})", writable=False)
+            parameters.append(entry)
+        return parameters
+
+    def set_parameter(self, name, value):
+        """Set a DCAM attribute by name (as given by get_parameters), value as text or number."""
+        attribute = self.cam.get_all_attributes()[name]
+        if attribute.kind == "enum" and isinstance(value, str):
+            attribute.update_limits()
+            value = attribute.labels[value]
+        elif attribute.kind == "int":
+            value = int(float(value))
+        elif attribute.kind == "float":
+            value = float(value)
+        self.cam.set_attribute_value(name, value)
+
     # ---------- acquisition ----------
 
     def snap(self, exposure_time=None):
@@ -151,14 +194,37 @@ class Orca:
         self.last_metadata = self.get_metadata(exposure_time, n_frames=1)
         return self.cam.snap(timeout=self._timeout_s(exposure_time))
 
-    def acquire_sequence(self, n_frames, exposure_time=None):
-        """Acquire n_frames images and return them as a 3D numpy array (n_frames, y, x)."""
+    def acquire_sequence(self, n_frames, exposure_time=None, progress=None, writer=None):
+        """
+        Acquire n_frames images and return them as a 3D numpy array (n_frames, y, x).
+        progress: optional function progress(done, n_frames, frame) called as frames arrive;
+        if it returns False the acquisition stops and the frames already taken are returned.
+        writer: optional saving.SequenceWriter; the frames are then written to its file as
+        they arrive instead of being kept in memory, and only the last frame is returned.
+        The camera fills a ring buffer of LIVE_BUFFER frames: if the frames are read (saved)
+        more slowly than they arrive, frames are overwritten and an error is raised.
+        """
         exposure_time = self._apply_exposure(exposure_time)
         self.last_metadata = self.get_metadata(exposure_time, n_frames=n_frames)
-        frames = self.cam.grab(n_frames, frame_timeout=self._timeout_s(exposure_time))
-        if len(frames) != n_frames:
-            raise RuntimeError(f"Only {len(frames)} of {n_frames} frames received.")
-        return np.array(frames)
+        collect = FrameCollector(self.last_metadata, writer)
+        self.cam.start_acquisition(mode="sequence", nframes=min(n_frames, LIVE_BUFFER))
+        try:
+            running = True
+            while running and collect.count < n_frames:
+                self.cam.wait_for_frame(since="lastread", timeout=self._timeout_s(exposure_time))
+                frames = self.cam.read_multiple_images()
+                if self.cam.get_frames_status().skipped:
+                    raise RuntimeError(
+                        f"Frames lost after {collect.count} frames: they arrived faster than "
+                        f"they were saved (ring buffer of {LIVE_BUFFER} frames overwritten). "
+                        f"Use a faster disk, a smaller ROI or a longer exposure.")
+                for frame in frames[:n_frames - collect.count]:
+                    if not collect(frame, n_frames, progress):
+                        running = False
+                        break
+        finally:
+            self.cam.stop_acquisition()
+        return collect.result()
 
     def start_live(self, exposure_time=None):
         """Start continuous acquisition; read the images with get_live_frame()."""
@@ -206,41 +272,60 @@ class Orca:
             "trigger_source": attribute("trigger_source"),
             "temperature_C": attribute("sensor_temperature"),
             "cooler_status": attribute("sensor_cooler_status"),
+            "advanced": self.get_advanced_metadata(),
         }
 
-    def save(self, images, folder, name="image", metadata=None, extra_metadata=None):
+    def get_advanced_metadata(self):
+        """All the camera parameters {name: value}, for the metadata."""
+        try:
+            return {p["name"]: p["value"] for p in self.get_parameters()}
+        except Exception as error:
+            return {"error": f"not readable: {error}"}
+
+    def save(self, images, folder, metadata=None, extra_metadata=None, pixel_bits=16, index=None,
+             slm_mask=None):
         """
-        Save a snap (2D array) or a sequence (3D array) as TIFF + .json metadata (see saving.py).
+        Save a snap (2D array) or a sequence (3D array) in folder as acquisition X:
+        X_0.tiff + X.json (see saving.py), the metadata also in the TIFF.
         metadata: acquisition metadata; if None, the one of the last snap / sequence.
-        extra_metadata: dictionary of anything else to keep (SLM mask, microscope state...).
+        extra_metadata: state of the other devices and anything else to keep: "devices",
+            "slm" sections and other keys (see saving.organize_metadata).
+        pixel_bits: 16 (as acquired) or 8 (1 byte per pixel: see saving.to_saved_pixels).
+        index: acquisition number X; None = the next free one in folder.
+        slm_mask: (pattern, name) of the SLM mask shown when the images were taken, or None.
         Returns the path of the TIFF file.
         """
         if metadata is None:
             metadata = self.last_metadata or self.get_metadata()
-        metadata = dict(metadata)
-        if extra_metadata:
-            metadata.update(extra_metadata)
-        return save_images(images, folder, name, metadata)
+        return save_images(images, folder, metadata, pixel_bits, index, extra_metadata, slm_mask)
 
-    def snap_and_save(self, folder, name="image", exposure_time=None, extra_metadata=None):
+    def snap_and_save(self, folder, exposure_time=None, extra_metadata=None):
         """Acquire one image and save it. Returns (image, tif_path)."""
         image = self.snap(exposure_time)
-        return image, self.save(image, folder, name, extra_metadata=extra_metadata)
+        return image, self.save(image, folder, extra_metadata=extra_metadata)
 
-    def acquire_sequence_and_save(self, n_frames, folder, name="sequence",
-                                  exposure_time=None, extra_metadata=None):
-        """Acquire n_frames images and save them in one TIFF. Returns (stack, tif_path)."""
-        stack = self.acquire_sequence(n_frames, exposure_time)
-        return stack, self.save(stack, folder, name, extra_metadata=extra_metadata)
+    def acquire_sequence_and_save(self, n_frames, folder, exposure_time=None, extra_metadata=None,
+                                  pixel_bits=16):
+        """
+        Acquire n_frames images as the next acquisition X of folder (X_Y.tiff files written as
+        they arrive, X_frames.csv, X.json). pixel_bits: 16 or 8. Returns the first TIFF path.
+        """
+        with SequenceWriter(folder, extra_metadata, pixel_bits=pixel_bits) as writer:
+            self.acquire_sequence(n_frames, exposure_time, writer=writer)
+        return writer.tif_path
 
     # ---------- closing ----------
 
     def close(self):
         """Stop any acquisition and close the camera."""
         if self.cam is not None:
-            self.stop_live()
-            self.cam.close()
-            self.cam = None
+            try:
+                self.stop_live()
+            finally:  # the camera is released even if stopping failed
+                try:
+                    self.cam.close()
+                finally:
+                    self.cam = None
 
     def __enter__(self):
         self.connect()
