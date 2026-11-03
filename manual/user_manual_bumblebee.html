@@ -51,6 +51,7 @@
       <li>Objective piezo</li>
       <li>Filter wheels and shutters</li>
       <li>Calibration</li>
+      <li>Lasers and galvos (iLas2)</li>
       <li>Files and metadata: reading the data</li>
       <li>Troubleshooting</li>
       <li>Known limits</li>
@@ -280,7 +281,26 @@ For long runs, lock the focus (Perfect Focus) and let the setup stabilise first:
 <figure class="half"><img src="img/slm_phase_record.png" alt="SLM phase step 6"><figcaption>Step 6 after the 9 angles, gray step 4 (simulated Orca and SLM, one disk).</figcaption></figure>
 <figure><img src="img/slm_phase_analysis.png" alt="SLM phase step 7"><figcaption>Step 7 on the simulated recording: same curve for both disks, 2&pi; at gray 227.</figcaption></figure>
 
-<h2 class="new">12. Files and metadata: reading the data</h2>
+<h2 class="new">12. Lasers and galvos (iLas2)</h2>
+<p>Bumblebee replaces Modular and MetaMorph for the laser powers and the galvos (tested 03/11/2026 with the 561 nm). <b>Close Modular and MetaMorph first</b>: only one program can drive the galvo card. Switch the laser emission on in the Oxxius software as usual; Bumblebee sets the power of each line.</p>
+<ul>
+  <li><b>Connect</b> asks for confirmation. The lasers stay at power 0.</li>
+  <li>The big button at the top shows the state: <b>Laser OFF</b>, or <b>LASER ON</b> in red. Click it to switch.</li>
+  <li><b>Laser lines</b>: tick the lines to use and set their power (% of the line). The QM2000 channel and the galvo calibration of each line are shown in grey. Unticking the last line switches the laser off.</li>
+  <li><b>Galvos</b>: where the beam goes in the back focal plane.
+    <ul>
+      <li><i>Fixed beam: angle, direction</i>: angle in the glass, as in Modular (0 = epi; TIRF above 62.6&deg;), direction of the tilt.</li>
+      <li><i>360&deg; circle: half angle</i>: the beam turns on a cone (100 points, 6.67 ms per turn, as Modular).</li>
+      <li><i>Fixed beam: galvo X, Y</i>: raw galvo position (-8000 to 8000).</li>
+    </ul></li>
+  <li><b>Angles of</b>: each line has its own galvo calibration (from Modular: the 561 uses <i>centrage</i>, the others <i>Calib 100x 1.49 NA</i>). The angles use the calibration of the first line ticked, or of the line chosen here. <b>Calibration</b> and <b>Incidence</b> show what is used.</li>
+  <li><b>Calibration...</b>: to come (angle and power calibrations).</li>
+  <li><b>Disconnect</b> and closing Bumblebee switch the lasers off. The laser state is saved with each acquisition.</li>
+</ul>
+<p>The lines are listed in <code>ilas_config.json</code> (up to 6, one per channel of the card): see <code>ilas_README.txt</code> to add one.</p>
+<figure class="half"><img src="img/lasers.png" alt="Lasers panel"><figcaption>Lasers panel (stand-in card): 561 nm at 50 %, 360&deg; circle at 5&deg;.</figcaption></figure>
+
+<h2 class="new">13. Files and metadata: reading the data</h2>
 <h3>Metadata</h3>
 <p>The metadata of acquisition X is in <code>X.json</code>, readable in any text editor, and in the first image of each TIFF file. It is recorded when the images are taken, not when they are saved: for a snap saved later, it is the state at the snap. It has 4 sections, in this order:</p>
 <table>
@@ -327,7 +347,7 @@ mask_0 = np.array(Image.open("3_slm_masks/0.png"))</code></pre></li>
   <li>The acquisitions of 27/10/2026 were renamed to this scheme. The old names are listed in <code>2026_10_27_test\renamed_files.txt</code> and in each .json (<code>original_file_name</code>).</li>
 </ul>
 
-<h2>13. Troubleshooting</h2>
+<h2>14. Troubleshooting</h2>
 <table>
   <tr><th>Problem</th><th>What to do</th></tr>
   <tr><td>Camera: every snap / live gives &ldquo;Frame timeout&rdquo;</td><td>The camera link is stuck, typically after a program holding it was killed. Close Bumblebee, switch the camera off for 10 s and on again, then reconnect.</td></tr>
@@ -342,7 +362,7 @@ mask_0 = np.array(Image.open("3_slm_masks/0.png"))</code></pre></li>
   <tr><td>Bumblebee stops with an error</td><td>The console window stays open with the message. Note it, then restart from the desktop icon.</td></tr>
 </table>
 
-<h2>14. Known limits</h2>
+<h2>15. Known limits</h2>
 <ul>
   <li>The lives and sequences read the frames in the main window: with long exposures, or two cameras in live, the window reacts slowly.</li>
   <li>The Prime &ldquo;Advanced settings&rdquo; window shows two long text parameters (system and driver info) as &ldquo;text too long to be read&rdquo;: reading them crashed the program. The Orca window has not been tested on the camera yet.</li>
@@ -353,9 +373,21 @@ mask_0 = np.array(Image.open("3_slm_masks/0.png"))</code></pre></li>
   <li>The galvos (Pangolin) are not in the interface yet.</li>
 </ul>
 
-<h2>15. Version history</h2>
+<h2>16. Version history</h2>
 <table>
   <tr><th>Date</th><th>Changes</th></tr>
+  <tr><td>03/11/2026</td><td>
+    <ul>
+      <li>Lasers and galvos (iLas2) tested with the 561 nm: power, fixed beam and 360&deg; circle as Modular.</li>
+      <li>Angles in degrees (Modular's formula and galvo calibrations, one per line); lines in <code>ilas_config.json</code> (up to 6); Calibration button (to come).</li>
+    </ul></td></tr>
+  <tr><td>02/11/2026</td><td>
+    <ul>
+      <li>SLM masks corrected by two calibrations: Align BFP (position), then SLM phase (gray levels, right half, global curve).</li>
+      <li>SLM phase: gray step (default 4), Orca exposure in the window, right channel only by default, Orca binning up to 16 &times; 16.</li>
+      <li>Calibration folders: <code>D:\BUMBLEBEE_calibration\&lt;type&gt;\YYYY_MM_DD</code>.</li>
+      <li>Lasers and galvos panel (iLas2), not tested on the setup yet.</li>
+    </ul></td></tr>
   <tr><td>30/10/2026</td><td>
     <ul>
       <li>SLM masks can be linked to an Align BFP calibration: each SLM half moved onto its BFP, &ldquo;Calibration linked&rdquo; in the corner, calibration file copied with each acquisition (<code>X_calibrations\</code>).</li>

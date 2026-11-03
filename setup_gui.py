@@ -53,6 +53,7 @@ DEFAULT_FILTER_CUBE = optional_import("nikon_ti", "DEFAULT_FILTER_CUBE")[0] or "
 LIGHT_PATH_COLORS = {"Left": "#d32f2f", "Right": "#388e3c"}  # red, green
 Piezo, PIEZO_ERROR = optional_import("piezo", "Piezo")
 FilterWheel, FILTER_WHEEL_ERROR = optional_import("filter_wheel", "FilterWheel")
+ILas, ILAS_ERROR = optional_import("ilas", "ILas")
 # folder opened first by "Load image / .npy..." of the SLM panel (easy masks, see its README)
 SLM_MASK_FOLDER = os.path.join(os.path.expanduser("~"), "Desktop", "SLM_masks")
 
@@ -1647,6 +1648,198 @@ class FilterWheelPanel(DevicePanel):
         return {} if self.device is None else self.device.get_metadata()
 
 
+# ---------------------------------------------------------------- lasers and galvos (iLas2)
+
+
+class LaserPanel(DevicePanel):
+    """
+    Laser lines and galvos of the iLas2 (ilas.py, QM2000 card; lines and galvo calibrations in
+    ilas_config.json): power of each line, where the beam goes in the BFP (fixed beam at an
+    angle and direction, 360 deg circle at a half angle, or galvo X, Y) and a big Laser ON / OFF
+    button. Angles are in the glass, from the galvo calibration of a line (Modular's formula).
+    The lasers are off at connection and when disconnected.
+    """
+
+    device_class = ILas
+    import_error = ILAS_ERROR
+    MODES = ("Fixed beam: angle, direction", "360° circle: half angle", "Fixed beam: galvo X, Y")
+    AUTO_LINE = "First line ticked"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.line_rows = {}  # line name -> (check box, power box)
+        self.lines_box = QtWidgets.QGroupBox("Laser lines (power: % of the line)")
+        QtWidgets.QGridLayout(self.lines_box)
+        self.mode = QtWidgets.QComboBox()
+        self.mode.addItems(self.MODES)
+        self.angle = spin_box(0, 78.6, 0, " deg in the glass", decimals=1)
+        self.angle.setSingleStep(0.5)
+        self.angle.setToolTip("Incidence angle in the glass (Modular's angle): 0 = epi; TIRF "
+                              "above the critical angle")
+        self.direction = spin_box(0, 359.9, 0, " deg", decimals=1)
+        self.direction.setWrapping(True)
+        self.direction.setToolTip("Direction of the tilt (azimuth in the BFP, 0 = galvo +X)")
+        self.galvo_x = spin_box(-8000, 8000, 0)
+        self.galvo_y = spin_box(-8000, 8000, 0)
+        for box in (self.galvo_x, self.galvo_y):
+            box.setSingleStep(50)
+        self.geometry_line = QtWidgets.QComboBox()
+        self.geometry_line.setToolTip("Line whose galvo calibration sets the angles (each line "
+                                      "has its own, in ilas_config.json)")
+        self.calibration_label = QtWidgets.QLabel("-")
+        self.incidence = QtWidgets.QLabel("-")
+        geometry = QtWidgets.QGroupBox("Galvos (where the beam goes in the BFP)")
+        form = QtWidgets.QFormLayout(geometry)
+        form.addRow("Mode", self.mode)
+        form.addRow("Angle", self.angle)
+        form.addRow("Direction", self.direction)
+        form.addRow("Galvo X", self.galvo_x)
+        form.addRow("Galvo Y", self.galvo_y)
+        form.addRow("Angles of", self.geometry_line)
+        form.addRow("Calibration", self.calibration_label)
+        form.addRow("Incidence", self.incidence)
+        self.mode.currentIndexChanged.connect(self.apply_geometry)
+        for box in (self.angle, self.direction, self.galvo_x, self.galvo_y):
+            box.setKeyboardTracking(False)  # applied on Enter / arrows, not at each key
+            box.valueChanged.connect(self.apply_geometry)
+        self.geometry_line.currentIndexChanged.connect(self.apply_geometry_line)
+        self.on_button = QtWidgets.QPushButton("Laser OFF - click to switch on")
+        self.on_button.setCheckable(True)
+        self.on_button.setMinimumHeight(40)
+        self.on_button.clicked.connect(self.toggle_laser)
+        self.calibrate_button = QtWidgets.QPushButton("Calibration...")
+        self.calibrate_button.setToolTip("Angle and power calibrations of the lines: to come")
+        self.calibrate_button.setEnabled(False)
+        self.device_widgets = [self.lines_box, geometry, self.on_button]
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addLayout(self.top)
+        layout.addWidget(self.on_button)  # at the top: the laser state always visible
+        layout.addWidget(self.lines_box)
+        layout.addWidget(geometry)
+        layout.addWidget(self.calibrate_button)
+        layout.addStretch()
+        self.update_mode_widgets()
+        self.update_state()
+
+    def device_name(self):
+        return f"{self.device.name}, serial {self.device.serial_number}"
+
+    def toggle_connection(self):
+        if self.device is None and not confirm(
+                self, "Bumblebee takes control of the QM2000 card (galvos and laser powers). "
+                      "Modular and MetaMorph must be closed. The lasers stay off (power 0) "
+                      "until you click Laser ON.\n\nConnect?"):
+            return
+        super().toggle_connection()
+
+    def on_connected(self):
+        """One row per laser line (ilas_config.json), the galvos at the current values."""
+        grid = self.lines_box.layout()
+        while grid.count():
+            grid.takeAt(0).widget().deleteLater()
+        self.line_rows = {}
+        for row, (name, line) in enumerate(self.device.lines.items()):
+            label = f"{line['wavelength']} nm" if name == str(line["wavelength"]) else \
+                f"{name} ({line['wavelength']} nm)"
+            check = QtWidgets.QCheckBox(label)
+            check.setToolTip("Used when the laser is on")
+            power = spin_box(0, 100, 0, " %", decimals=1)
+            power.setSingleStep(0.5)
+            power.setKeyboardTracking(False)
+            info = QtWidgets.QLabel(f"channel {line['channel']}, {line['calibration']}")
+            info.setStyleSheet("color: gray;")
+            check.toggled.connect(lambda on, n=name: self.run(self.device.enable, n, on))
+            power.valueChanged.connect(
+                lambda value, n=name: self.run(self.device.set_power, n, value))
+            grid.addWidget(check, row, 0)
+            grid.addWidget(power, row, 1)
+            grid.addWidget(info, row, 2)
+            self.line_rows[name] = (check, power)
+        self.angle.setMaximum(round(self.device.max_angle(), 1))
+        self.geometry_line.blockSignals(True)
+        self.geometry_line.clear()
+        self.geometry_line.addItems([self.AUTO_LINE, *self.device.lines])
+        self.geometry_line.blockSignals(False)
+        self.apply_geometry()
+
+    def update_mode_widgets(self):
+        mode = self.mode.currentIndex()
+        self.angle.setEnabled(mode in (0, 1))
+        self.direction.setEnabled(mode == 0)
+        self.galvo_x.setEnabled(mode == 2)
+        self.galvo_y.setEnabled(mode == 2)
+        self.geometry_line.setEnabled(mode in (0, 1))
+
+    def apply_geometry_line(self):
+        if self.device is not None:
+            name = self.geometry_line.currentText()
+            self.run(self.device.set_geometry_line, None if name == self.AUTO_LINE else name)
+
+    def apply_geometry(self):
+        self.update_mode_widgets()
+        if self.device is None:
+            return
+        mode = self.mode.currentIndex()
+        if mode == 0:
+            self.run(self.device.set_angle, self.angle.value(), self.direction.value())
+        elif mode == 1:
+            self.run(self.device.set_ring, self.angle.value())
+        else:
+            self.run(self.device.set_point, self.galvo_x.value(), self.galvo_y.value())
+
+    def toggle_laser(self, on):
+        if on:
+            self.run(self.device.laser_on)
+        else:
+            self.run(self.device.laser_off)
+
+    def run(self, function, *args):
+        try:
+            function(*args)
+        except Exception as error:
+            show_error(self, error)
+        self.refresh()
+
+    def refresh(self):
+        """Laser button, calibration and incidence from the device state."""
+        is_on = self.device is not None and self.device.is_on
+        self.on_button.setChecked(is_on)
+        self.on_button.setText("LASER ON - click to switch off" if is_on
+                               else "Laser OFF - click to switch on")
+        self.on_button.setStyleSheet(  # explicit border: no checked-button hatching
+            "QPushButton { background-color: #d32f2f; color: white; font-weight: bold; "
+            "border: 2px solid #8e0000; border-radius: 4px; }" if is_on else "")
+        if self.device is None:
+            return
+        try:
+            line, name, ellipse = self.device.calibration()
+            (cx, cy), (ax, ay) = ellipse["center"], ellipse["half_axes"]
+            self.calibration_label.setText(f"{name} ({line}): centre {cx:.0f}, {cy:.0f}, "
+                                           f"half axes {ax:.0f}, {ay:.0f}")
+        except RuntimeError as error:
+            self.calibration_label.setText(str(error))
+        incidence = self.device.incidence()
+        if incidence is None:
+            x, y = self.device.frame_points()[0]
+            self.incidence.setText(f"galvo X, Y {x:.0f}, {y:.0f} (angle not computed)")
+        else:
+            self.incidence.setText(
+                f"{incidence['illumination']}: {incidence['angle_in_glass_deg']:.1f} deg, NA "
+                f"{incidence['effective_na']:.2f} (TIRF above "
+                f"{self.device.critical_angle():.1f} deg)")
+
+    def close_device(self):
+        super().close_device()  # ILas.close switches the lasers off
+        self.refresh()
+
+    def update_state(self):
+        super().update_state()
+        self.refresh()
+
+    def get_metadata(self):
+        return {} if self.device is None else self.device.get_metadata()
+
+
 # ---------------------------------------------------------------- calibration
 
 
@@ -1734,6 +1927,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.nikon_panel = NikonPanel()
         self.piezo_panel = PiezoPanel()
         self.filter_panel = FilterWheelPanel()
+        self.laser_panel = LaserPanel()
         self.calibration_panel = CalibrationPanel({
             "microscope": ("Microscope", self.nikon_panel), "orca": ("Orca Flash4", self.orca_panel),
             "slm": ("SLM", self.slm_panel), "prime": ("Prime 95B", self.prime_panel),
@@ -1753,7 +1947,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                      (self.flir_panel, "FLIR Blackfly", False),
                                      (self.nikon_panel, "Microscope", True),
                                      (self.piezo_panel, "Objective piezo", True),
-                                     (self.filter_panel, "Filter wheels", True)):
+                                     (self.filter_panel, "Filter wheels", True),
+                                     (self.laser_panel, "Lasers (iLas)", True)):
             dock = self.make_dock(panel, title, scroll)
             toolbar.addAction(dock.toggleViewAction())
             view_menu.addAction(dock.toggleViewAction())
@@ -1813,9 +2008,9 @@ class MainWindow(QtWidgets.QMainWindow):
             dock.show()
 
     def default_layout(self):
-        """SLM, microscope, piezo above the filter wheels on the left (the space beside the
-        microscope is kept for the laser panel, to come), the cameras tabbed on the right."""
-        slm, prime, orca, flir, nikon, piezo, filters = self.docks
+        """SLM, microscope, piezo (tabbed with the lasers) above the filter wheels on the
+        left, the cameras tabbed on the right."""
+        slm, prime, orca, flir, nikon, piezo, filters, lasers = self.docks
         for dock in self.docks:
             dock.setFloating(False)
             dock.show()
@@ -1826,7 +2021,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitDockWidget(slm, nikon, QtCore.Qt.Vertical)
         self.splitDockWidget(nikon, piezo, QtCore.Qt.Horizontal)
         self.splitDockWidget(piezo, filters, QtCore.Qt.Vertical)
+        self.tabifyDockWidget(piezo, lasers)
         prime.raise_()
+        piezo.raise_()
         self.resizeDocks([slm, prime], [700, 1000], QtCore.Qt.Horizontal)
 
     def dock_all(self):
@@ -1864,7 +2061,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         Saved with each camera image (see saving.organize_metadata):
           devices: connected or not, for every device, then the state of the microscope,
-                   objective piezo and filter wheels ({"connected": False} if not connected)
+                   objective piezo, filter wheels and lasers ({"connected": False} if not
+                   connected)
           slm: connected or not, link, mask shown and the calibrations that corrected it
                (the masks themselves: shown_slm_mask; the calibration files are copied in
                X_calibrations by SequenceWriter)
@@ -1880,10 +2078,10 @@ class MainWindow(QtWidgets.QMainWindow):
         titles = {self.slm_panel: "slm", self.prime_panel: "prime_95b",
                   self.orca_panel: "orca_flash4", self.flir_panel: "flir_blackfly",
                   self.nikon_panel: "microscope", self.piezo_panel: "objective_piezo",
-                  self.filter_panel: "filter_wheels"}
+                  self.filter_panel: "filter_wheels", self.laser_panel: "lasers"}
         connected = {title: panel.device is not None for panel, title in titles.items()}
         devices = {"connected": connected}
-        for panel in (self.nikon_panel, self.piezo_panel, self.filter_panel):
+        for panel in (self.nikon_panel, self.piezo_panel, self.filter_panel, self.laser_panel):
             devices[titles[panel]] = state(panel)
         return {"devices": devices, "slm": state(self.slm_panel)}
 

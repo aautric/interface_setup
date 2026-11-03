@@ -10,6 +10,8 @@ One window with a panel for each device:
   Objective piezo   Thorlabs PPC001, objective Z     (piezo.py, piezo_README.txt)
   Filter wheels     Sutter Lambda 10-3, wheels A B   (filter_wheel.py,
                     and shutters A B                  filter_wheel_README.txt)
+  Lasers (iLas)     GATACA iLas2: laser powers and   (ilas.py, ilas_config.json,
+                    galvos, QM2000 card               ilas_README.txt)
 
 Run:
   - double-click "Bumblebee" on the desktop (shortcut to run_setup_gui.bat,
@@ -36,7 +38,7 @@ Each panel is a dock window:
 The arrangement (including separate windows and their screens) is saved when
 the main window is closed and restored at the next start.
 Default: SLM top left, microscope below it with the piezo next to it and the
-filter wheels under the piezo (space kept for the laser panel, to come), the
+filter wheels under the piezo, the lasers panel tabbed with the piezo, the
 two cameras tabbed on the right. A panel added in a
 new version appears at its default place the first time; use View > Reset
 layout if needed.
@@ -281,6 +283,25 @@ Filter wheels panel
                              the speed next to it (0 fastest, 7 slowest)
   Shutter A / Shutter B      state, Open / Close button
 The rows are built from the configuration read from the controller.
+
+
+Lasers (iLas) panel (ilas.py; tested on the card 2026-11-03 with the 561 nm)
+---------------------------------------------------------------------------
+  Connect                    asks for confirmation (Modular and MetaMorph must be
+                             closed); the lasers stay at power 0
+  Laser ON / OFF             big button at the top, red when on
+  Laser lines                one row per line of ilas_config.json (up to 6: one per
+                             QM2000 channel): tick = used when on, power in % of the
+                             line; channel and galvo calibration in grey
+  Galvos                     fixed beam: angle (deg in the glass, 0 = epi) and
+                             direction; 360 deg circle: half angle; fixed beam:
+                             galvo X, Y (-8000...8000)
+  Angles of                  line whose galvo calibration sets the angles (default:
+                             the first line ticked); calibration and incidence shown
+                             (epi / HiLo / TIRF above 62.6 deg, NA)
+  Calibration...             to come: angle and power calibrations of the lines
+  Disconnect / closing       lasers off, end of the LD2000 session
+Saved with each acquisition: X.json > devices > lasers. See ilas_README.txt.
 
 
 Code structure

@@ -1,0 +1,12 @@
+{
+    "_doc": "iLas2 laser lines and galvo calibrations, read by ilas.py. One line per QM2000 colour channel (1-6). calibration: name of a galvo calibration (Modular's TIRFCalibration.xml, or 'calibrations' below, which win). low / high: % of the channel range for 0 / 100 % power (Modular offset_low / offset_high). See ilas_README.txt.",
+    "lines": [
+        {"name": "405", "wavelength": 405, "channel": 1, "calibration": "Calib 100x 1.49 NA", "low": 0, "high": 100},
+        {"name": "488", "wavelength": 488, "channel": 4, "calibration": "Calib 100x 1.49 NA", "low": 0, "high": 100},
+        {"name": "561", "wavelength": 561, "channel": 3, "calibration": "centrage", "low": 0, "high": 100},
+        {"name": "640", "wavelength": 640, "channel": 2, "calibration": "Calib 100x 1.49 NA", "low": 0, "high": 100}
+    ],
+    "calibrations": {},
+    "modular_calibrations": "~/Modular/TIRFCalibration.xml",
+    "objective": {"na": 1.49, "n_glass": 1.52, "n_medium": 1.35}
+}
