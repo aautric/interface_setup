@@ -269,10 +269,13 @@ class SequenceWriter:
     frame_times: write X_frames.csv (otherwise the mask of each frame goes in the .json).
     slm_mask: optional function() -> (pattern, name) of the SLM mask shown now, or None (no
         mask, SLM not connected); called at each frame.
+    frame_columns: optional {name: function()}, more columns of X_frames.csv, each function
+        called at each frame (e.g. the z plane of a z stack).
     """
 
     def __init__(self, folder, extra_metadata=None, size_bytes=None, pixel_bits=16, index=None,
-                 on_file_done=None, piece_bytes=PIECE_BYTES, frame_times=True, slm_mask=None):
+                 on_file_done=None, piece_bytes=PIECE_BYTES, frame_times=True, slm_mask=None,
+                 frame_columns=None):
         os.makedirs(folder, exist_ok=True)
         self.folder = folder
         self.index = next_index(folder) if index is None else index
@@ -298,11 +301,12 @@ class SequenceWriter:
         self._frame_masks = []  # mask of each frame, when there is no X_frames.csv
         self._times = None
         self._t0 = None
+        self.frame_columns = dict(frame_columns or {})
         if frame_times:
             self._times_file = open(self.frames_path, "w", newline="")
             self._times = csv.writer(self._times_file)
             self._times.writerow(["frame", "pc_time_s", "camera_frame", "camera_time_s",
-                                  "slm_mask"])
+                                  "slm_mask", *self.frame_columns])
 
     def _new_piece(self):
         if self._tif is not None:
@@ -322,7 +326,10 @@ class SequenceWriter:
         return self.paths[0]
 
     def start(self, metadata):
-        """Camera metadata (called by the camera before the first frame)."""
+        """Camera metadata (called by the camera before the first frame; a sequence acquired in
+        several parts, e.g. the planes of a z stack, keeps the metadata of its first part)."""
+        if self.n_frames:
+            return
         camera = saved_pixel_metadata(metadata, self.pixel_bits)
         self._shift = camera.get("saved_value_shift", 0)
         self.metadata = organize_metadata(camera, self.extra_metadata)
@@ -373,7 +380,8 @@ class SequenceWriter:
             info = info or {}
             self._times.writerow([self.n_frames, f"{now - self._t0:.6f}", info.get("camera_frame", ""),
                                   "" if info.get("camera_time_s") is None
-                                  else f"{info['camera_time_s']:.9f}", mask])
+                                  else f"{info['camera_time_s']:.9f}", mask,
+                                  *(column() for column in self.frame_columns.values())])
         else:
             self._frame_masks.append(mask)
         self._piece_frames += 1

@@ -64,6 +64,7 @@ TEMPERATURE_PERIOD = 2000  # ms between two temperature readings
 POSITION_PERIOD = 500      # ms between two readings of the microscope / piezo state
 MAX_Z_JUMP = 100           # µm, larger focus moves ask for a confirmation
 MAX_PIEZO_JUMP = 20        # µm, larger piezo moves ask for a confirmation
+Z_STACK_SETTLE = 0.05      # s waited at each plane of a z stack once the piezo is there
 MIN_VIEW_SIZE = 300        # px, minimum size of the image displays
 AUTO_LEVELS_PERCENTILES = (0.5, 99.5)  # auto contrast range, ignoring hot / dead pixels
 SEQUENCE_DISPLAY_PERIOD = 100  # ms between two frames shown during a sequence
@@ -599,15 +600,17 @@ class CameraPanel(DevicePanel):
     has_temperature = False  # True: temperature box in the corner of the image
 
     def __init__(self, get_extra_metadata=None, get_slm_mask=None, destination=None, mover=None,
-                 parent=None):
+                 get_piezo=None, parent=None):
         """
         get_extra_metadata(): state of the other devices, saved with the images.
         get_slm_mask(): (pattern, name) of the SLM mask shown now, or None; saved with each frame.
         destination(): folder of the saved files (ValueError with the reason if not set).
         mover: saving.FileMover; sequences are then written on the fast disk (STAGING_ROOT)
         and moved to their destination afterwards, if it is on another disk.
+        get_piezo(): the objective piezo panel, for the z stacks (None: no z stack).
         """
         super().__init__(parent)
+        self.get_piezo = get_piezo or (lambda: None)
         self.image = None           # last acquired image (2D) or sequence (3D)
         self.image_metadata = None  # metadata of self.image
         self.image_extra = None     # state of the other devices when self.image was taken
@@ -637,6 +640,14 @@ class CameraPanel(DevicePanel):
             "font-weight: bold;")
         self.temperature_overlay.move(8, 8)
         self.temperature_overlay.hide()
+        # focus of the microscope in the top-right corner of the image (to search the focus)
+        self.focus_overlay = QtWidgets.QLabel(self.view.ui.graphicsView)
+        self.focus_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 160); color: #80deea; padding: 3px 6px; "
+            "font-weight: bold; font-size: 14px;")
+        self.focus_overlay.setToolTip("Focus of the Nikon microscope (Microscope panel)")
+        self.focus_overlay.hide()
+        self.view.ui.graphicsView.installEventFilter(self)
         self.sensor_temperature = "-"  # last texts shown in the box
         self.image_temperature = None
         self.stats_label = QtWidgets.QLabel()
@@ -678,6 +689,27 @@ class CameraPanel(DevicePanel):
         self.size_label = QtWidgets.QLabel()
         self.save_button = QtWidgets.QPushButton("Save last image")
         self.sequence_button = QtWidgets.QPushButton("Acquire and save sequence")
+        # z stack with the objective piezo (closed loop): the frames at each plane, from the
+        # lowest plane (reference - down x step) to the highest (reference + up x step)
+        self.z_stack = QtWidgets.QCheckBox("Z stack (objective piezo)")
+        self.z_stack.setToolTip(
+            "The sequence is taken at each plane, from the lowest (reference - down x step) to\n"
+            "the highest (reference + up x step), Frames at each plane; then the piezo goes\n"
+            "back to the reference. The piezo must be connected, in closed loop (µm).")
+        self.z_reference = spin_box(0, 1000, 0, " µm", decimals=3)
+        self.z_reference.setToolTip("Reference plane: where the focus is")
+        self.z_current = QtWidgets.QPushButton("Current position")
+        self.z_current.setToolTip("Reference = the piezo position now")
+        self.z_step = spin_box(0.001, MAX_PIEZO_JUMP, 0.1, " µm", decimals=3)
+        self.z_step.setPrefix("step ")
+        self.z_down = spin_box(0, 10000, 10)
+        self.z_down.setPrefix("down ")
+        self.z_down.setSuffix(" steps")
+        self.z_up = spin_box(0, 10000, 10)
+        self.z_up.setPrefix("up ")
+        self.z_up.setSuffix(" steps")
+        self.z_label = QtWidgets.QLabel()
+        self.z_widgets = [self.z_reference, self.z_current, self.z_step, self.z_down, self.z_up]
 
         # layout
         acquisition = QtWidgets.QHBoxLayout()
@@ -713,6 +745,18 @@ class CameraPanel(DevicePanel):
         frames_row.addWidget(self.n_frames)
         frames_row.addWidget(self.size_label, 1)
         save_form.addRow("Frames", frames_row)
+        z_row = QtWidgets.QHBoxLayout()
+        z_row.addWidget(self.z_stack)
+        z_row.addWidget(QtWidgets.QLabel("reference"))
+        z_row.addWidget(self.z_reference)
+        z_row.addWidget(self.z_current)
+        z_row.addStretch()
+        save_form.addRow("Z stack", z_row)
+        z_planes_row = QtWidgets.QHBoxLayout()
+        for widget in (self.z_step, self.z_down, self.z_up):
+            z_planes_row.addWidget(widget)
+        z_planes_row.addWidget(self.z_label, 1)
+        save_form.addRow("", z_planes_row)
         save_buttons = QtWidgets.QHBoxLayout()
         save_buttons.addWidget(self.save_button)
         save_buttons.addWidget(self.sequence_button)
@@ -742,6 +786,11 @@ class CameraPanel(DevicePanel):
         self.pixel_bits.currentIndexChanged.connect(self.update_size_label)
         self.save_button.clicked.connect(self.save_image)
         self.sequence_button.clicked.connect(self.save_sequence)
+        self.z_stack.toggled.connect(self.toggle_z_stack)
+        self.z_current.clicked.connect(lambda: self.use_current_z())
+        for box in (self.z_reference, self.z_step, self.z_down, self.z_up):
+            box.valueChanged.connect(self.update_size_label)
+        self.toggle_z_stack(False)
 
         self.device_widgets = [self.snap_button, self.live_button, self.exposure, self.binning,
                                self.select_button, self.roi_button, self.full_frame_button,
@@ -812,6 +861,26 @@ class CameraPanel(DevicePanel):
         self.temperature_overlay.adjustSize()
         self.temperature_overlay.show()
         self.temperature_overlay.raise_()
+
+    def show_focus(self, text):
+        """Focus of the microscope in the top-right corner of the image ('' hides it)."""
+        if not text:
+            self.focus_overlay.hide()
+            return
+        self.focus_overlay.setText(f"focus {text}")
+        self.focus_overlay.adjustSize()
+        self.place_focus_overlay()
+        self.focus_overlay.show()
+        self.focus_overlay.raise_()
+
+    def place_focus_overlay(self):
+        area = self.view.ui.graphicsView
+        self.focus_overlay.move(max(0, area.width() - self.focus_overlay.width() - 8), 8)
+
+    def eventFilter(self, watched, event):
+        if watched is self.view.ui.graphicsView and event.type() == QtCore.QEvent.Resize:
+            self.place_focus_overlay()  # stays in the corner when the image area is resized
+        return super().eventFilter(watched, event)
 
     # ---------- display ----------
 
@@ -1015,38 +1084,65 @@ class CameraPanel(DevicePanel):
         (STAGING_ROOT) and moved in the background: each TIFF file of a long sequence as soon
         as it is complete, the last one with the .json / _frames.csv at the end.
         """
-        n_frames = self.n_frames.value()
-        size = n_frames * self.frame_bytes()
+        n_frames = self.n_frames.value()  # per plane for a z stack
+        planes = self.z_positions()
+        total = n_frames * (1 if planes is None else len(planes))
+        size = total * self.frame_bytes()
+        piezo = None
         try:
             folder = self.destination()
             write_folder = self.staging_folder(folder) or folder
             # the fast disk during the acquisition, and the final destination
             self.check_space(size, [write_folder, folder])
+            if planes is not None:
+                piezo = self.check_z_stack(planes)
+                if piezo is None:
+                    return
         except (OSError, ValueError) as error:
             show_error(self, error)
             return
-        progress = QtWidgets.QProgressDialog(f"Acquiring {n_frames} frames...", "Stop", 0,
-                                             n_frames, self)
+        progress = QtWidgets.QProgressDialog(f"Acquiring {total} frames...", "Stop", 0,
+                                             total, self)
         progress.setWindowTitle("Sequence")
         progress.setWindowModality(QtCore.Qt.WindowModal)  # no other click meanwhile
         progress.setMinimumDuration(0)
 
         last_display = 0
         start = time.monotonic()
+        plane = {"index": 0, "z": None}  # plane of the z stack being acquired
 
-        def on_frame(done, total, frame):
+        def on_frame(done, n, frame):
             nonlocal last_display
+            done += plane["index"] * n_frames  # frames of the planes before
             progress.setValue(done)
             now = time.monotonic()
             if now - last_display > SEQUENCE_DISPLAY_PERIOD / 1000:
                 self.display(frame)  # acts as the live during the sequence
                 last_display = now
                 rate = done / max(now - start, 1e-9)
-                progress.setLabelText(f"Acquisition {writer.index}: frame {done} / {total}, "
-                                      f"{rate:.1f} frames/s, about "
+                where = "" if planes is None else \
+                    f"plane {plane['index'] + 1} / {len(planes)} (z {plane['z']:.3f} µm), "
+                progress.setLabelText(f"Acquisition {writer.index}: {where}frame {done} / "
+                                      f"{total}, {rate:.1f} frames/s, about "
                                       f"{format_duration((total - done) / rate)} left")
             QtWidgets.QApplication.processEvents()
             return not progress.wasCanceled()
+
+        def acquire():
+            if planes is None:
+                return self.device.acquire_sequence(n_frames, None, on_frame, writer)
+            frame = None
+            try:
+                for k, z in enumerate(planes):  # lowest to highest
+                    piezo.set_position(z)  # returns once the position is reached
+                    time.sleep(Z_STACK_SETTLE)
+                    plane["index"], plane["z"] = k, piezo.get_position()
+                    frame = self.device.acquire_sequence(n_frames, None, on_frame, writer)
+                    if progress.wasCanceled() or writer.n_frames < (k + 1) * n_frames:
+                        break  # stopped
+            finally:
+                piezo.set_position(self.z_reference.value())
+            return frame
 
         def file_done(path):  # each finished file goes to the destination (hard disk)
             # same subfolder there (SLM masks folder)
@@ -1057,13 +1153,17 @@ class CameraPanel(DevicePanel):
         writer = None
         try:
             extra = self.get_extra_metadata()
+            columns = None
+            if planes is not None:
+                extra["z_stack"] = self.z_stack_metadata(planes, n_frames)
+                columns = {"z_plane": lambda: plane["index"],
+                           "z_um": lambda: f"{plane['z']:.3f}"}
             writer = SequenceWriter(write_folder, extra, size, self.pixel_bits.currentData(),
                                     index=self.next_index(folder),
                                     on_file_done=file_done if write_folder != folder else None,
-                                    slm_mask=self.get_slm_mask)
+                                    slm_mask=self.get_slm_mask, frame_columns=columns)
             with writer:  # also closes (and moves) the files of the frames before an error
-                frame = self.run_paused(self.device.acquire_sequence, n_frames, None,
-                                        on_frame, writer)
+                frame = self.run_paused(acquire)
             # "Save last image" then saves this last frame alone
             self.image = frame
             self.image_metadata = dict(self.device.last_metadata, n_frames=1)
@@ -1072,10 +1172,11 @@ class CameraPanel(DevicePanel):
             self.record_image_temperature(self.image_metadata)
             self.display(frame)
             done = writer.n_frames
-            stopped = f" (stopped after {done} of {n_frames})" if done < n_frames else ""
+            stopped = f" (stopped after {done} of {total})" if done < total else ""
             moving = f", moving to {folder}" if write_folder != folder else ""
-            message = (f"Saved acquisition {writer.index} ({len(writer.paths)} TIFF file(s))"
-                       f"{stopped}{moving}")
+            stack = "" if planes is None else f", z stack of {len(planes)} planes"
+            message = (f"Saved acquisition {writer.index} ({len(writer.paths)} TIFF file(s)"
+                       f"{stack}){stopped}{moving}")
         except Exception as error:
             if writer is not None and writer.n_frames:
                 error = (f"{error}\n\nThe {writer.n_frames} frames taken before are saved as "
@@ -1101,14 +1202,82 @@ class CameraPanel(DevicePanel):
         return pixels * (1 if self.pixel_bits.currentData() == 8 else itemsize)
 
     def update_size_label(self):
-        """Size of the saved files: one frame and the whole sequence."""
+        """Size of the saved files: one frame and the whole sequence (all the planes of a z
+        stack); planes of the z stack."""
+        planes = self.z_positions()
+        if planes is None:
+            self.z_label.setText("")
+        else:
+            self.z_label.setText(f"{len(planes)} planes, z {planes[0]:.3f} to {planes[-1]:.3f} "
+                                 f"µm; Frames = frames per plane")
         try:
             frame = self.frame_bytes()
         except Exception:  # not connected
             self.size_label.setText("")
             return
+        total = self.n_frames.value() * (1 if planes is None else len(planes))
         self.size_label.setText(f"{frame / 1e6:.1f} MB / frame, sequence "
-                                f"{frame * self.n_frames.value() / 1e9:.2f} GB")
+                                f"{frame * total / 1e9:.2f} GB")
+
+    # ---------- z stack ----------
+
+    def toggle_z_stack(self, on):
+        for widget in self.z_widgets:
+            widget.setEnabled(on)
+        if on:
+            self.use_current_z(quiet=True)
+        self.update_size_label()
+
+    def use_current_z(self, quiet=False):
+        """Reference of the z stack = the piezo position now (closed loop)."""
+        try:
+            self.z_reference.setValue(self.z_piezo().get_position())
+        except Exception as error:
+            if not quiet:
+                show_error(self, error)
+
+    def z_positions(self):
+        """Positions (µm) of the planes of the z stack, lowest first; None if no z stack."""
+        if not self.z_stack.isChecked():
+            return None
+        reference, step = self.z_reference.value(), self.z_step.value()
+        return [round(reference + k * step, 4)
+                for k in range(-self.z_down.value(), self.z_up.value() + 1)]
+
+    def z_piezo(self):
+        """The piezo of the z stacks; ValueError if not connected or not in closed loop."""
+        panel = self.get_piezo()
+        if panel is None or panel.device is None:
+            raise ValueError("Z stack: connect the objective piezo first.")
+        if not panel.device.is_closed_loop():
+            raise ValueError("Z stack: put the objective piezo in closed loop (µm) first.")
+        return panel.device
+
+    def check_z_stack(self, planes):
+        """The piezo, after checking the planes (ValueError) and asking before large moves;
+        None if the user declines."""
+        piezo = self.z_piezo()
+        if planes[0] < 0 or planes[-1] > piezo.max_travel:
+            raise ValueError(f"Z stack from {planes[0]:.3f} to {planes[-1]:.3f} µm: outside the "
+                             f"piezo travel (0 to {piezo.max_travel:.0f} µm).")
+        now = piezo.get_position()
+        span = planes[-1] - planes[0]
+        jump = max(abs(planes[0] - now), abs(self.z_reference.value() - now))
+        if (span > MAX_PIEZO_JUMP or jump > MAX_PIEZO_JUMP) and not confirm(
+                self, f"Z stack over {span:.1f} µm (from {planes[0]:.3f} to {planes[-1]:.3f} µm; "
+                      f"piezo now at {now:.3f} µm). Go on?"):
+            return None
+        return piezo
+
+    def z_stack_metadata(self, planes, n_frames):
+        return {"reference_um": self.z_reference.value(), "step_um": self.z_step.value(),
+                "steps_down": self.z_down.value(), "steps_up": self.z_up.value(),
+                "n_planes": len(planes), "frames_per_plane": n_frames,
+                "positions_um": planes,
+                "order": "lowest to highest plane, all the frames of a plane together",
+                "frames_file_columns": "z_plane (0 = lowest), z_um (piezo position measured "
+                                       "when the plane is reached)",
+                "settle_s": Z_STACK_SETTLE, "piezo_after": "back to the reference"}
 
     def save(self, images, metadata):
         folder = self.destination()
@@ -1145,6 +1314,7 @@ class PrimePanel(CameraPanel):
     import_error = CAMERA_ERROR
     sensor_size = 1200
     has_temperature = True
+    SETPOINTS = (-15, -20, -25)  # °C, target temperatures offered for the sensor
 
     def temperature_text(self):
         # during the live camera.py returns the last value read (reading would stop the live)
@@ -1157,16 +1327,65 @@ class PrimePanel(CameraPanel):
         self.gain = spin_box(0, 10, 1)
         self.readout_button = QtWidgets.QPushButton("Apply readout")
         self.readout_button.clicked.connect(self.apply_readout)
+        self.fan = QtWidgets.QComboBox()
+        self.fan.setToolTip("Speed of the camera fan: lower = less vibration, less cooling "
+                            "(watch the sensor temperature). Saved in the metadata (fan_speed).")
+        self.fan.activated.connect(self.apply_fan)
+        self.setpoint = QtWidgets.QComboBox()
+        self.setpoint.setToolTip("Target temperature of the sensor (the camera keeps it when "
+                                 "closed; Reset to defaults sets -15 °C). The sensor takes a few "
+                                 "minutes to reach it: watch the temperature shown.")
+        self.setpoint.activated.connect(self.apply_setpoint)
         row = QtWidgets.QHBoxLayout()
         for label, box in (("port", self.readout_port), ("speed", self.speed), ("gain", self.gain)):
             row.addWidget(QtWidgets.QLabel(label))
             row.addWidget(box)
         row.addWidget(self.readout_button)
-        return row, [self.readout_button]
+        row.addWidget(QtWidgets.QLabel("  fan"))
+        row.addWidget(self.fan)
+        row.addWidget(QtWidgets.QLabel("  target T"))
+        row.addWidget(self.setpoint)
+        return row, [self.readout_button, self.fan, self.setpoint]
 
     def apply_readout(self):
         self.apply_setting(self.device.set_readout, self.readout_port.value(),
                            self.speed.value(), self.gain.value())
+
+    def on_connected(self):
+        super().on_connected()
+        self.fan.clear()
+        try:
+            # "Off(Liquid Cooled)" left out: the Prime is air cooled here, it would overheat
+            self.fan.addItems([s for s in self.device.fan_speeds() if not s.startswith("Off")])
+            self.fan.setCurrentText(str(self.device.fan_speed))
+        except Exception as error:
+            print("Could not read the fan speed:", error)
+        self.update_setpoints()
+
+    def update_setpoints(self):
+        """The preset target temperatures within the range of the camera, and the current one
+        (added if it is not a preset, e.g. set by another software)."""
+        self.setpoint.clear()
+        try:
+            low, high = self.device.temperature_setpoint_range()
+            current = self.device.temperature_setpoint
+        except Exception as error:
+            print("Could not read the temperature setpoint:", error)
+            return
+        values = sorted({v for v in self.SETPOINTS if low <= v <= high} | {current}, reverse=True)
+        for value in values:
+            self.setpoint.addItem(f"{value:g} °C", value)
+        self.setpoint.setCurrentIndex(values.index(current))
+
+    def apply_setpoint(self):
+        if self.device is not None:
+            self.apply_setting(self.device.set_temperature_setpoint, self.setpoint.currentData())
+            self.update_setpoints()
+
+    def apply_fan(self):
+        if self.device is not None:
+            self.apply_setting(self.device.set_fan_speed, self.fan.currentText())
+            self.fan.setCurrentText(str(self.device.fan_speed))
 
 
 class OrcaPanel(CameraPanel):
@@ -1230,6 +1449,7 @@ class NikonPanel(DevicePanel):
 
     device_class = NikonTi
     import_error = NIKON_ERROR
+    focus_changed = QtCore.pyqtSignal(str)  # focus position text ('' when not known)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1397,6 +1617,7 @@ class NikonPanel(DevicePanel):
                     if color else "")
             if ti.has("TIZDrive"):
                 self.z_label.setText(f"{ti.get_z():.3f} µm")
+                self.focus_changed.emit(self.z_label.text())
             if ti.has("TIXYDrive"):
                 x, y = ti.get_xy()
                 self.xy_label.setText(f"x {x:.1f} µm   y {y:.1f} µm")
@@ -1433,6 +1654,7 @@ class NikonPanel(DevicePanel):
     def close_device(self):
         self.timer.stop()
         super().close_device()
+        self.focus_changed.emit("")
 
     def get_metadata(self):
         metadata = {"filter_cube": self.cube.currentText()}  # even if not connected
@@ -1688,6 +1910,8 @@ class LaserPanel(DevicePanel):
                                       "has its own, in ilas_config.json)")
         self.calibration_label = QtWidgets.QLabel("-")
         self.incidence = QtWidgets.QLabel("-")
+        for label in (self.calibration_label, self.incidence):
+            label.setWordWrap(True)  # the panel stays narrow enough for the left column
         geometry = QtWidgets.QGroupBox("Galvos (where the beam goes in the BFP)")
         form = QtWidgets.QFormLayout(geometry)
         form.addRow("Mode", self.mode)
@@ -1711,12 +1935,21 @@ class LaserPanel(DevicePanel):
         self.calibrate_button.setToolTip("Angle and power calibrations of the lines: to come")
         self.calibrate_button.setEnabled(False)
         self.device_widgets = [self.lines_box, geometry, self.on_button]
+        # two columns (the dock is wide and low): lines and calibration | galvos
+        lines_column = QtWidgets.QVBoxLayout()
+        lines_column.addWidget(self.lines_box)
+        lines_column.addWidget(self.calibrate_button)
+        lines_column.addStretch()
+        galvos_column = QtWidgets.QVBoxLayout()
+        galvos_column.addWidget(geometry)
+        galvos_column.addStretch()
+        columns = QtWidgets.QHBoxLayout()
+        columns.addLayout(lines_column, 1)
+        columns.addLayout(galvos_column, 1)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(self.top)
         layout.addWidget(self.on_button)  # at the top: the laser state always visible
-        layout.addWidget(self.lines_box)
-        layout.addWidget(geometry)
-        layout.addWidget(self.calibrate_button)
+        layout.addLayout(columns)
         layout.addStretch()
         self.update_mode_widgets()
         self.update_state()
@@ -1886,6 +2119,8 @@ class CalibrationPanel(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QMainWindow):
     """All the panels as dock windows, with a toolbar to show / hide them."""
 
+    LAYOUT_VERSION = "2"  # change with default_layout: the saved layout is then not restored
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Setup control")
@@ -1920,11 +2155,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.slm_panel = SLMPanel()
         camera_options = dict(get_extra_metadata=self.extra_metadata,
                               get_slm_mask=self.shown_slm_mask,
-                              destination=self.destination, mover=self.mover)
+                              destination=self.destination, mover=self.mover,
+                              get_piezo=lambda: self.piezo_panel)
         self.prime_panel = PrimePanel(**camera_options)
         self.orca_panel = OrcaPanel(**camera_options)
         self.flir_panel = FlirPanel(**camera_options)
         self.nikon_panel = NikonPanel()
+        for camera_panel in (self.prime_panel, self.orca_panel, self.flir_panel):
+            self.nikon_panel.focus_changed.connect(camera_panel.show_focus)
         self.piezo_panel = PiezoPanel()
         self.filter_panel = FilterWheelPanel()
         self.laser_panel = LaserPanel()
@@ -1981,7 +2219,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1700, 1000)
         if self.settings.value("geometry") is not None:
             self.restoreGeometry(self.settings.value("geometry"))
-            self.restoreState(self.settings.value("state"))
+            # the panels as left by the user, unless the default layout changed since
+            if self.settings.value("layout_version") == self.LAYOUT_VERSION:
+                self.restoreState(self.settings.value("state"))
 
     def make_dock(self, panel, title, scroll):
         """Dock window holding panel; scroll: in a scroll area, so the dock can be made small."""
@@ -2008,8 +2248,8 @@ class MainWindow(QtWidgets.QMainWindow):
             dock.show()
 
     def default_layout(self):
-        """SLM, microscope, piezo (tabbed with the lasers) above the filter wheels on the
-        left, the cameras tabbed on the right."""
+        """SLM, microscope, piezo above the filter wheels, the lasers under them (full width)
+        on the left, the cameras tabbed on the right."""
         slm, prime, orca, flir, nikon, piezo, filters, lasers = self.docks
         for dock in self.docks:
             dock.setFloating(False)
@@ -2021,9 +2261,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitDockWidget(slm, nikon, QtCore.Qt.Vertical)
         self.splitDockWidget(nikon, piezo, QtCore.Qt.Horizontal)
         self.splitDockWidget(piezo, filters, QtCore.Qt.Vertical)
-        self.tabifyDockWidget(piezo, lasers)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, lasers, QtCore.Qt.Vertical)
         prime.raise_()
-        piezo.raise_()
         self.resizeDocks([slm, prime], [700, 1000], QtCore.Qt.Horizontal)
 
     def dock_all(self):
@@ -2102,6 +2341,7 @@ class MainWindow(QtWidgets.QMainWindow):
             wait.close()  # "Close now": the files left are moved at the next start
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("state", self.saveState())
+        self.settings.setValue("layout_version", self.LAYOUT_VERSION)
         for panel in self.panels:
             try:
                 panel.close_device()

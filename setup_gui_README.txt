@@ -38,10 +38,11 @@ Each panel is a dock window:
 The arrangement (including separate windows and their screens) is saved when
 the main window is closed and restored at the next start.
 Default: SLM top left, microscope below it with the piezo next to it and the
-filter wheels under the piezo, the lasers panel tabbed with the piezo, the
-two cameras tabbed on the right. A panel added in a
+filter wheels under the piezo, the lasers panel under them (full width, lines
+and galvos side by side), the cameras tabbed on the right. A panel added in a
 new version appears at its default place the first time; use View > Reset
-layout if needed.
+layout if needed. When the default layout changes (LAYOUT_VERSION in
+setup_gui.py), the saved arrangement is dropped once and the new default used.
 
 
 SLM panel
@@ -76,13 +77,23 @@ Camera panels (Prime 95B, Orca Flash4, FLIR Blackfly)
                              "(before live)": reading it would stop the live);
                              "last image": temperature recorded with the last
                              snap / sequence (the value saved in its metadata)
+  Focus                      box in the top-right corner of the image: focus
+                             position of the Nikon (as in the Microscope panel),
+                             updated every 0.5 s while the microscope is connected
   top right                  Orca: cooler status (the Flash4.0 V2 gives no
                              temperature); FLIR: nothing (its sensor
                              temperature is not exposed by Micro-Manager)
   Settings tab
     Exposure                 in ms, applied when you leave the field (Enter/Tab)
     Binning                  applied immediately
-    Readout                  Prime: port / speed / gain indexes + Apply readout
+    Readout                  Prime: port / speed / gain indexes + Apply readout;
+                             fan: High / Medium / Low (applied at once; lower =
+                             less vibration, less cooling: watch the temperature;
+                             "Off" left out, liquid cooling only); saved in the
+                             metadata as fan_speed; target T: -15 / -20 / -25 °C
+                             (sensor setpoint, kept by the camera; the current
+                             value is added if it is not one of these; saved as
+                             temperature_setpoint_C)
                              Orca: fast (standard) / slow (low noise)
                              FLIR: gain in dB (automatic gain off)
     ROI x, y, w, h           Apply ROI; Full frame goes back to the full sensor
@@ -124,6 +135,33 @@ Camera panels (Prime 95B, Orca Flash4, FLIR Blackfly)
                              2^shift). Live and display are not changed.
     Frames                   number of frames, with the size of one frame and
                              of the sequence as saved (ROI, binning, pixels)
+    Z stack                  (added 2026-11-04, tested with a simulated
+                             camera and piezo only) tick "Z stack
+                             (objective piezo)": reference (where the focus
+                             is; set to the piezo position when ticked,
+                             "Current position" to take it again), step
+                             (µm), down and up (number of steps). Acquire and
+                             save sequence then takes Frames at each plane,
+                             from the lowest (reference - down x step) to the
+                             highest (reference + up x step), all in ONE
+                             acquisition (frames of a plane together), then
+                             puts the piezo back to the reference (also after
+                             Stop or an error). The piezo must be connected
+                             and in closed loop (µm); the planes must be in
+                             its travel; a stack over more than 20 µm
+                             (MAX_PIEZO_JUMP), or starting more than 20 µm
+                             from the piezo position, asks first. At each
+                             plane: the piezo move waits until the position
+                             is reached, then 50 ms (Z_STACK_SETTLE), then a
+                             camera sequence (Prime: restarted at each plane,
+                             a short dead time between planes). Saved:
+                             X_frames.csv columns z_plane (0 = lowest) and
+                             z_um (piezo position measured when the plane is
+                             reached); "z_stack" in the acquisition section
+                             of X.json (reference_um, step_um, steps_down,
+                             steps_up, n_planes, frames_per_plane,
+                             positions_um...). The size shown is that of the
+                             whole stack.
     Save last image / Acquire and save sequence
   If the live is running it is paused while a setting is changed or a
   sequence is acquired, then restarted.
@@ -189,7 +227,7 @@ image" and sequences, all cameras) are numbered 0, 1, 2... in order:
                  frame arrived, from the first frame), camera_frame and
                  camera_time_s (Prime: camera counter and time stamp of the
                  start of the exposure), slm_mask (number of the SLM mask
-                 shown, or none)
+                 shown, or none); z stacks: z_plane, z_um
   X_slm_masks\   the SLM masks shown during acquisition X, K.png, numbered in
                  the order they first appear (a mask shown again keeps its
                  number: one mask all along = a single 0.png)
@@ -234,7 +272,11 @@ Calibration
 Upper right corner of the window (end of the toolbar row, CalibrationPanel):
 one button per calibration of calibration.py, each opening its step-by-step
 window (optical elements to place, devices to connect, then the calibration).
-First one: Align BFP (align_BFP). See calibration_README.txt.
+Calibrations: Align BFP (align_BFP), SLM phase (slm_phase), Channels geometry
+(channels_geometry: mapping between the two channels of the Prime), Input
+polar SLM (input_polar_SLM: polarization reaching the SLM), Aberrations
+(aberrations, draft: z stacks of beads, field-dependent aberrations). See
+calibration_README.txt.
 
 
 Microscope panel

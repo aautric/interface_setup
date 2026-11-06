@@ -32,8 +32,31 @@ Calibrations:
                 recorded on the Orca; then slm_phase_analysis (polarimetry per pixel, phase =
                 angle about the SLM axis on the Poincare sphere).
 
-A new calibration = a new Calibration in CALIBRATIONS, with its steps.
+    channels_geometry (left path, red) correspondence between the two channels of the Prime
+                (top = reference, x right y up; bottom, x right y down): the white lamp
+                (recorded, N frames) gives the channels (where the image is cut in 2), a first
+                guess of the mapping and the normalization of the channels; then one or more
+                fields of TetraSpeck beads (size 4, N frames each); channels_geometry.py fits
+                and pairs the beads and fits the mapping top -> bottom (affine: rotation,
+                scales, shift; + a smooth residual field, local rotation). A mapping only: no
+                image is corrected (no interpolation of the noise).
 
+    input_polar_SLM (left path, red) polarization of the light reaching the SLM: the analyzer
+                (quarter-wave plate turned by hand + polarizer) right before the SLM; wavelength
+                chosen first; beads in focus; for each of the 9 plate angles a time series of N
+                Orca frames (flat mask on the SLM); then input_polar_slm_analysis (Stokes vector
+                per Orca pixel of the BFPs, azimuth / ellipticity / degree of polarization, and
+                per disk their fluctuation in time; plate zero from the slm_phase result).
+
+    aberrations (left path, red; DRAFT 2026-11-04) field-dependent aberrations: piezo z stacks
+                of 200 nm TetraSpeck beads (several fields) without mask, a model-free first
+                look (widths vs z, focus, astigmatism, asymmetry vs the field), z stacks with
+                phase masks (double helix, Airy, tri-spot...), a correction of the common
+                aberrations on the SLM (Zernike per SLM half, by hand for now), check stacks,
+                a calibration file. The PSF fit (Zernike per bead, field model) is to come:
+                plan in aberrations.py.
+
+A new calibration = a new Calibration in CALIBRATIONS, with its steps.
 Calibrations linked to the SLM masks (LINKABLE_CALIBRATIONS, LinkCalibrationDialog): when a
 mask is loaded in the SLM panel, the user is asked to link it to a calibration file (or not).
 A linked calibration corrects the masks sent to the SLM (align_BFP: each SLM half moved by the
@@ -838,17 +861,19 @@ class SlmPhaseRecordPage(QtWidgets.QWizardPage):
             lambda k: (f"flat_{levels[k]}", flat_mask(levels[k])), folder, extra,
             f"Plate {angle}°", on_image)
         if done < len(levels):
+            remove_acquisition(writer.folder, writer.index)
             self.result.setText(f"Plate {angle}°: stopped after {done} of {len(levels)} "
-                                f"images (acquisition {writer.index}, not used).")
+                                f"images (acquisition {writer.index} deleted).")
             return False
-        self.recorded[angle] = (writer.folder, writer.index)
+        replaced = replace_recording(self.recorded, angle, writer.folder, writer.index)
         self.update_table()
         self.completeChanged.emit()
         warning = (f" <b style='color:{MISSING_COLOR}'>Saturated pixels (max {brightest[0]}): "
                    f"lower the exposure and record all the angles again.</b>"
                    if brightest[0] >= SATURATION else f" (max {brightest[0]} counts)")
-        self.result.setText(f"Plate {angle}°: acquisition {writer.index} in {writer.folder}."
-                            f"{warning}")
+        again = "" if replaced is None else f" (previous one, {replaced}, deleted)"
+        self.result.setText(f"Plate {angle}°: acquisition {writer.index} in {writer.folder}"
+                            f"{again}.{warning}")
         return True
 
 
@@ -1007,6 +1032,1210 @@ class SlmPhaseAnalysisPage(QtWidgets.QWizardPage):
         self.use_button.setEnabled(False)
 
 
+# ---------------------------------------------------------------- channels_geometry
+
+LAMP_FRAMES, BEAD_FRAMES = 10, 20  # frames per recording (averaged by the analysis)
+
+
+def record_frames(parent, camera, n_frames, folder, extra, label):
+    """n_frames snaps of a camera panel saved as one acquisition of folder (X_0.tiff, X.json,
+    X_frames.csv); progress window with Stop, live paused meanwhile. Returns (frames taken,
+    writer, mean image)."""
+    progress = QtWidgets.QProgressDialog(f"{label}...", "Stop", 0, n_frames, parent)
+    progress.setWindowModality(QtCore.Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    done, total = 0, None
+
+    def acquire():
+        nonlocal done, total
+        writer = SequenceWriter(folder, extra, None, 16, index=next_index(folder))
+        with writer:
+            for k in range(n_frames):
+                progress.setLabelText(f"{label}: frame {k + 1} / {n_frames}")
+                progress.setValue(k)
+                QtWidgets.QApplication.processEvents()
+                if progress.wasCanceled():
+                    break
+                image = camera.device.snap()
+                if k == 0:
+                    writer.start(camera.device.last_metadata)
+                writer.write(image)
+                total = image.astype(float) if total is None else total + image
+                done += 1
+                camera.display(image)
+        return writer
+
+    try:
+        writer = camera.run_paused(acquire)
+    finally:
+        progress.close()
+    return done, writer, None if total is None else total / done
+
+
+def remove_acquisition(folder, index):
+    """Delete the files of acquisition index of folder (an angle recorded again, or a recording
+    stopped before the end): X.json, X_K.tiff, X_frames.csv, X_slm_masks, X_calibrations."""
+    import shutil
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if name in (saving.masks_folder_name(index), saving.calibrations_folder_name(index)):
+            shutil.rmtree(path)
+        elif name in (saving.json_name(index), saving.frames_name(index)) or (
+                name.startswith(f"{index}_") and name.endswith(".tiff")
+                and name[len(f"{index}_"):-5].isdigit()):
+            os.remove(path)
+
+
+def replace_recording(recorded, angle, folder, index):
+    """recorded[angle] = (folder, index); the previous recording of this angle is deleted
+    (the last one is the good one)."""
+    previous = recorded.get(angle)
+    recorded[angle] = (folder, index)
+    if previous is not None and previous != (folder, index):
+        remove_acquisition(*previous)
+        return previous[1]
+    return None
+
+
+def channels_geometry_steps(panels, tools):
+    # shared by the pages of this window
+    state = {"lamp": None, "channels": None, "beads": [], "calibration": None}
+    return [ChannelsLampPage(panels, tools, state), ChannelsBeadsPage(panels, tools, state),
+            ChannelsAnalysisPage(state), ChannelsCheckPage(panels, tools, state)]
+
+
+class _ChannelsRecordPage(QtWidgets.QWizardPage):
+    """Common part of the lamp and bead pages: Prime buttons, exposure, number of frames."""
+
+    def __init__(self, panels, tools, state, title, text, frames, record_label):
+        super().__init__()
+        self.setTitle(title)
+        self.prime, self.tools, self.state = panels["prime"], tools, state
+        label = QtWidgets.QLabel(text)
+        label.setWordWrap(True)
+        self.frames = QtWidgets.QSpinBox()
+        self.frames.setRange(1, 1000)
+        self.frames.setValue(frames)
+        self.frames.setSuffix(" frames")
+        self.frames.setToolTip("Frames of the recording, averaged by the analysis")
+        self.exposure = exposure_box(self.prime)
+        buttons = QtWidgets.QHBoxLayout()
+        for text_, function in (("Show the Prime", lambda: show_panel(self.prime)),
+                                ("Start / stop Prime live", lambda: toggle_live(self.prime))):
+            button = QtWidgets.QPushButton(text_)
+            button.clicked.connect(lambda _, f=function: self.run(f))
+            buttons.addWidget(button)
+        buttons.addWidget(self.exposure)
+        buttons.addWidget(self.frames)
+        record = QtWidgets.QPushButton(record_label)
+        record.clicked.connect(lambda: self.run(self.record))
+        buttons.addWidget(record)
+        buttons.addStretch()
+        self.status = QtWidgets.QLabel()
+        self.result = QtWidgets.QLabel()
+        self.result.setWordWrap(True)
+        self.result.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(label)
+        layout.addLayout(buttons)
+        layout.addWidget(self.status)
+        layout.addWidget(self.result)
+        layout.addStretch()
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(DEVICE_CHECK_PERIOD)
+        self.timer.timeout.connect(self.update_status)
+
+    def initializePage(self):
+        self.update_status()
+        self.timer.start()
+
+    def cleanupPage(self):
+        self.timer.stop()
+
+    def validatePage(self):
+        self.timer.stop()
+        return True
+
+    def update_status(self):
+        text, color = live_status(self.prime, "Prime")
+        self.status.setText(text)
+        self.status.setStyleSheet(f"color: {color}; font-weight: bold")
+        self.exposure.sync()
+
+    def run(self, function):
+        try:
+            function()
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, "Error", str(error))
+        self.update_status()
+
+    def acquire(self, recording):
+        """Record the frames as an acquisition of CALIBRATION_ROOT/channels_geometry/YYYY_MM_DD:
+        (folder, index, mean image), or None if stopped."""
+        extra = self.tools["extra_metadata"]()
+        extra["calibration"] = {"name": "channels_geometry", "light_path": self.tools.get("side"),
+                                "recording": recording, "frames": self.frames.value()}
+        folder = calibration_folder("channels_geometry")
+        done, writer, mean = record_frames(self, self.prime, self.frames.value(), folder, extra,
+                                           recording)
+        if done < self.frames.value():
+            self.result.setText(f"{recording}: stopped after {done} of {self.frames.value()} "
+                                f"frames.")
+            return None
+        return writer.folder, writer.index, mean
+
+
+class ChannelsLampPage(_ChannelsRecordPage):
+    """White lamp recording: the two channels (edges, centres, split row) and the lamp
+    normalization, shown at once."""
+
+    def __init__(self, panels, tools, state):
+        super().__init__(
+            panels, tools, state, "White lamp: the two channels",
+            "Switch the <b>white transmitted lamp</b> on (by hand), nothing in focus: both "
+            "channels evenly lit on the Prime (top = reference, bottom), not saturated (Prime "
+            "live). <b>Record the lamp</b>: the channels are found at once (edges, centres, "
+            "where the image is cut in 2), with the normalization of the channels.<br>Saved in "
+            f"<code>{saving.CALIBRATION_ROOT}\\channels_geometry\\YYYY_MM_DD</code>.",
+            LAMP_FRAMES, "Record the lamp")
+
+    def record(self):
+        import channels_geometry
+        recorded = self.acquire("white lamp")
+        if recorded is None:
+            return
+        folder, index, mean = recorded
+        try:
+            channels = channels_geometry.detect_channels(mean)
+            norm = channels_geometry.normalization(mean, channels)
+        except ValueError as error:
+            self.state["lamp"] = self.state["channels"] = None
+            self.completeChanged.emit()
+            self.result.setText(f"Lamp saved as acquisition {index} in {folder}, but <b>the "
+                                f"channels are not found</b>: {error}")
+            return
+        self.state["lamp"], self.state["channels"] = (folder, index), channels
+        lines = [f"Lamp saved as acquisition {index} in {folder}."]
+        for name in channels_geometry.CHANNELS:
+            c = channels[name]
+            lines.append(f"<b>{name}</b>{' (reference)' if name == 'top' else ''}: columns "
+                         f"{c['cols'][0]:.1f}-{c['cols'][1]:.1f}, rows {c['rows'][0]:.1f}-"
+                         f"{c['rows'][1]:.1f}, centre {c['center_xy'][0]:.1f}, "
+                         f"{c['center_xy'][1]:.1f}")
+        (tx, ty), (bx, by) = channels["top"]["center_xy"], channels["bottom"]["center_xy"]
+        lines.append(f"Cut at row {channels['split_row']:.1f}; centre to centre (bottom - top) "
+                     f"{bx - tx:+.1f}, {by - ty:+.1f} px (image).")
+        shape = channels["top"]["shape"]
+        lines.append(f"Frame (top rectangle) rotation on the camera "
+                     f"{channels['frame_rotation_deg']:+.3f} deg (skew {shape['skew_deg']:+.3f} "
+                     f"deg); bottom rectangle wrt top {channels['bottom_rotation_lamp_deg']:+.3f} "
+                     f"deg.")
+        lines.append(f"Normalization: bottom / top = {norm['bottom_over_top']:.4f}.")
+        self.result.setText("<br>".join(lines))
+        self.completeChanged.emit()
+
+    def isComplete(self):
+        return self.state["channels"] is not None
+
+
+class ChannelsBeadsPage(_ChannelsRecordPage):
+    """Bead fields: each recording one field (N frames); the beads found in each channel are
+    counted at once."""
+
+    def __init__(self, panels, tools, state):
+        super().__init__(
+            panels, tools, state, "Beads: one or more fields",
+            "Switch the white lamp <b>off</b>. Put the <b>TetraSpeck beads (size 4)</b> in focus "
+            "on the Prime, with the excitation on (Lasers panel), not saturated. <b>Record this "
+            "field</b>; move the stage to another field and record again for more beads (all "
+            "the fields are pooled by the analysis).",
+            BEAD_FRAMES, "Record this field")
+
+    def initializePage(self):
+        super().initializePage()
+        same = [r for r in self.state["beads"] if r[0] == calibration_folder("channels_geometry")]
+        self.state["beads"] = same
+
+    def record(self):
+        import channels_geometry
+        recorded = self.acquire(f"beads field {len(self.state['beads']) + 1}")
+        if recorded is None:
+            return
+        folder, index, mean = recorded
+        channels = self.state["channels"]
+        counts = []
+        for name in channels_geometry.CHANNELS:
+            box = (*channels[name]["cols"], *channels[name]["rows"])
+            counts.append(len(channels_geometry.find_beads(mean, box)))
+        self.state["beads"].append((folder, index))
+        self.result.setText(self.result.text() + ("<br>" if self.result.text() else "") +
+                            f"Field {len(self.state['beads'])}: acquisition {index}, beads found "
+                            f"top {counts[0]}, bottom {counts[1]}.")
+        self.completeChanged.emit()
+
+    def isComplete(self):
+        return bool(self.state["beads"])
+
+
+class ChannelsAnalysisPage(QtWidgets.QWizardPage):
+    """Last step: channels_geometry.run on the lamp and the bead fields (in a thread); result
+    file X_channels_geometry_<date_time>.json / .png next to the first bead field."""
+
+    def __init__(self, state):
+        super().__init__()
+        self.setTitle("Mapping between the channels")
+        self.state = state
+        self.thread, self.outcome = None, None
+        text = QtWidgets.QLabel(
+            "The beads of each channel are fitted and paired; the mapping top &rarr; bottom (in "
+            "the axes of each channel: top x right y up, bottom x right y down) is fitted as a "
+            "rotation + scales + shift (affine) and a smooth residual field. No image is "
+            "corrected. The result is written next to the first bead field "
+            "(<code>X_channels_geometry_&lt;date_time&gt;.json</code> and <code>.png</code>).")
+        text.setWordWrap(True)
+        self.button = QtWidgets.QPushButton("Analyse")
+        self.button.clicked.connect(self.analyse)
+        self.result = QtWidgets.QLabel()
+        self.result.setTextFormat(QtCore.Qt.RichText)
+        self.result.setWordWrap(True)
+        self.result.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.result.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.figure = QtWidgets.QLabel()
+        self.figure.setFixedSize(FIGURE_SIZE, FIGURE_SIZE)
+        self.figure.setAlignment(QtCore.Qt.AlignCenter)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.result, 1)
+        row.addWidget(self.figure, 0, QtCore.Qt.AlignTop)
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addWidget(self.button)
+        buttons.addStretch()
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(text)
+        layout.addLayout(buttons)
+        layout.addLayout(row, 1)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(200)
+        self.timer.timeout.connect(self.check_thread)
+
+    def initializePage(self):
+        self.button.setEnabled(self.state["lamp"] is not None and bool(self.state["beads"]))
+
+    def cleanupPage(self):
+        self.timer.stop()
+
+    def analyse(self):
+        import threading
+        import channels_geometry
+        if self.thread is not None:
+            return
+        lamp_folder, lamp_index = self.state["lamp"]
+        beads = [i for folder, i in self.state["beads"] if folder == lamp_folder]
+        if not beads:
+            self.result.setText("The bead fields are not in the folder of the lamp recording "
+                                "(another day?): record the lamp again.")
+            return
+        self.button.setEnabled(False)
+        self.figure.clear()
+        self.result.setText(f"Analysing lamp {lamp_index} and bead fields {beads}...")
+
+        def work():
+            try:
+                self.outcome = channels_geometry.run(lamp_folder, lamp_index, beads)
+            except Exception as error:
+                self.outcome = error
+
+        self.thread = threading.Thread(target=work, daemon=True)
+        self.thread.start()
+        self.timer.start()
+
+    def check_thread(self):
+        import channels_geometry
+        if self.thread is None or self.thread.is_alive():
+            return
+        self.timer.stop()
+        self.thread = None
+        self.button.setEnabled(True)
+        if isinstance(self.outcome, Exception):
+            self.result.setText(f"<b>Analysis failed</b>: {self.outcome}")
+            return
+        path, content = self.outcome
+        self.state["calibration"] = path
+        self.result.setText(channels_geometry.summary(content) + f"<br>Written: {path} (and "
+                            f"<code>_check.png</code>: the beads left out)")
+        pixmap = QtGui.QPixmap(path.replace(".json", ".png"))
+        if not pixmap.isNull():
+            self.figure.setPixmap(pixmap.scaled(FIGURE_SIZE, FIGURE_SIZE, QtCore.Qt.KeepAspectRatio,
+                                                QtCore.Qt.SmoothTransformation))
+
+
+class ChannelsCheckPage(_ChannelsRecordPage):
+    """Optional check, as check_calib of reconstruction_juliette: bead fields NOT used for the
+    mapping, each top bead mapped to the bottom channel and compared with the bottom bead
+    measured there (error map and histogram)."""
+
+    def __init__(self, panels, tools, state):
+        super().__init__(
+            panels, tools, state, "Check on new beads (optional)",
+            "Move the stage to a <b>new field</b> of beads (not recorded in step 5), in focus. "
+            "<b>Record and check</b>: the beads of the two channels are found, each top bead is "
+            "mapped to the bottom channel with the mapping of step 6 and compared with the "
+            "bottom bead measured there. Shown: the errors (rms, median, 95 %, std, "
+            "interquartile, mean vector), the map of the errors and their histogram. Written "
+            "next to the recording: <code>X_channels_geometry_check_&lt;date_time&gt;.json"
+            "</code> and <code>.png</code>.",
+            BEAD_FRAMES, "Record and check")
+        self.figure = QtWidgets.QLabel()
+        self.figure.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        self.layout().insertWidget(self.layout().count() - 1, self.figure)
+
+    def initializePage(self):
+        super().initializePage()
+        if self.state["calibration"] is None:
+            self.result.setText("Analyse first (step 6).")
+
+    def record(self):
+        import channels_geometry
+        if self.state["calibration"] is None:
+            self.result.setText("Analyse first (step 6).")
+            return
+        recorded = self.acquire("check beads")
+        if recorded is None:
+            return
+        folder, index, _ = recorded
+        path, out = channels_geometry.check(self.state["calibration"], folder, [index])
+        self.result.setText(channels_geometry.check_summary(out) + f"<br>Written: {path}")
+        pixmap = QtGui.QPixmap(path.replace(".json", ".png"))
+        if not pixmap.isNull():
+            self.figure.setPixmap(pixmap.scaled(2 * FIGURE_SIZE, FIGURE_SIZE,
+                                                QtCore.Qt.KeepAspectRatio,
+                                                QtCore.Qt.SmoothTransformation))
+
+
+# ---------------------------------------------------------------- input_polar_SLM
+
+
+def input_polar_steps(panels, tools):
+    prime = panels["prime"]
+    state = {"wavelength_nm": 640, "run": None}  # shared by the pages of this window
+    record = InputPolarRecordPage(panels, tools, state)
+    return [
+        WavelengthPage(state),
+        InstructionPage(
+            "Beads in focus on the Prime",
+            "Put a sample of TetraSpeck beads (size 1) on the microscope and bring the beads in "
+            "focus on the Prime (live), excitation on. No Perfect Focus: it does not lock on "
+            "TetraSpeck beads.<br><b>Next stops the Prime live.</b>",
+            actions=[("Show the Prime", lambda: show_panel(prime)),
+                     ("Start / stop Prime live", lambda: toggle_live(prime))],
+            status=lambda: live_status(prime, "Prime"),
+            confirm="The beads are in focus on the Prime.",
+            on_next=lambda: stop_live(prime)),
+        record,
+        InputPolarAnalysisPage(record, state),
+    ]
+
+
+class InputPolarRecordPage(QtWidgets.QWizardPage):
+    """
+    input_polar_SLM recording: for each angle of the quarter-wave plate of the analyzer (right
+    before the SLM, turned by hand: a window asks for each one), a time series of N Orca frames,
+    the same flat mask on the SLM, saved as one acquisition of
+    CALIBRATION_ROOT/input_polar_SLM/YYYY_MM_DD (calibration "run": the same for the 9 angles of
+    this window). An angle can be recorded again (the analysis takes the last).
+    """
+
+    def __init__(self, panels, tools, state):
+        super().__init__()
+        import input_polar_slm_analysis as analysis
+        import slm_phase_analysis
+        self.angles = slm_phase_analysis.QWP_ANGLES
+        self.setTitle("Time series on the Orca, for each angle of the quarter-wave plate")
+        self.orca, self.slm = panels["orca"], panels["slm"]
+        self.tools, self.state = tools, state
+        self.recorded = {}  # angle -> (folder, index)
+        text = QtWidgets.QLabel(
+            f"For each angle of the quarter-wave plate ({', '.join(map(str, self.angles))}°), a "
+            f"time series of Orca frames (number below, the same for all the angles), the SLM "
+            f"showing the flat mask below. <b>The plate is turned by hand</b>: a window tells the "
+            f"angle before each recording. Before: check on the Orca live that the disks are not "
+            f"saturated, at a few plate angles. The Orca settings must stay the same for all the "
+            f"angles.<br>Saved in <code>{saving.CALIBRATION_ROOT}\\{analysis.NAME}\\YYYY_MM_DD"
+            f"</code>.")
+        text.setWordWrap(True)
+        buttons = QtWidgets.QHBoxLayout()
+        for label, function in (("Show the Orca", lambda: show_panel(self.orca)),
+                                ("Start / stop Orca live", lambda: toggle_live(self.orca))):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(lambda _, f=function: self.run(f))
+            buttons.addWidget(button)
+        self.exposure = exposure_box(self.orca)
+        buttons.addWidget(self.exposure)
+        self.level = QtWidgets.QSpinBox()
+        self.level.setRange(0, 255)
+        self.level.setPrefix("SLM flat gray ")
+        self.level.setToolTip("Flat mask shown on the SLM during the recordings (after the "
+                              "analyzer: it does not change the measured polarization)")
+        show = QtWidgets.QPushButton("Show it on the SLM")
+        show.clicked.connect(lambda: self.run(self.show_flat))
+        buttons.addWidget(self.level)
+        buttons.addWidget(show)
+        buttons.addStretch()
+        self.table = QtWidgets.QTableWidget(len(self.angles), 2)
+        self.table.setHorizontalHeaderLabels(["Plate angle", "Recording"])
+        self.table.verticalHeader().hide()
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        for row, angle in enumerate(self.angles):
+            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(f"{angle}°"))
+        record_buttons = QtWidgets.QHBoxLayout()
+        self.frames = QtWidgets.QSpinBox()
+        self.frames.setRange(2, 1000)
+        self.frames.setValue(analysis.FRAMES)
+        self.frames.setSuffix(" frames per angle")
+        self.frames.setToolTip("Frames of the time series of each angle (mean for the "
+                               "polarization, frame by frame for its fluctuations)")
+        record_buttons.addWidget(self.frames)
+        remaining = QtWidgets.QPushButton("Record the remaining angles")
+        remaining.clicked.connect(lambda: self.run(self.record_remaining))
+        again = QtWidgets.QPushButton("Record the selected angle again")
+        again.clicked.connect(lambda: self.run(self.record_selected))
+        record_buttons.addWidget(remaining)
+        record_buttons.addWidget(again)
+        record_buttons.addStretch()
+        self.status = QtWidgets.QLabel()
+        self.result = QtWidgets.QLabel()
+        self.result.setWordWrap(True)
+        self.result.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout = QtWidgets.QVBoxLayout(self)
+        for item in (text, buttons, self.table, record_buttons, self.status, self.result):
+            (layout.addLayout if isinstance(item, QtWidgets.QLayout) else layout.addWidget)(item)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(DEVICE_CHECK_PERIOD)
+        self.timer.timeout.connect(self.update_status)
+        self.update_table()
+
+    def initializePage(self):
+        self.update_status()
+        self.timer.start()
+
+    def cleanupPage(self):
+        self.timer.stop()
+
+    def validatePage(self):
+        self.timer.stop()
+        return True
+
+    def isComplete(self):
+        return all(angle in self.recorded for angle in self.angles)
+
+    def update_status(self):
+        text, color = live_status(self.orca, "Orca")
+        self.status.setText(text)
+        self.status.setStyleSheet(f"color: {color}; font-weight: bold")
+        self.exposure.sync()
+
+    def update_table(self):
+        for row, angle in enumerate(self.angles):
+            done = self.recorded.get(angle)
+            item = QtWidgets.QTableWidgetItem(
+                f"acquisition {done[1]}" if done else "not recorded")
+            item.setForeground(QtGui.QColor(OK_COLOR if done else NEUTRAL_COLOR))
+            self.table.setItem(row, 1, item)
+
+    def run(self, function):
+        try:
+            function()
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, "Error", str(error))
+        self.update_status()
+
+    def show_flat(self):
+        level = self.level.value()
+        self.slm.show_mask(flat_mask(level), f"flat_{level}")
+
+    def record_remaining(self):
+        for angle in self.angles:
+            if angle not in self.recorded and not self.record_angle(angle):
+                return
+
+    def record_selected(self):
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            raise ValueError("Select an angle in the table first.")
+        self.record_angle(self.angles[rows[0].row()])
+
+    def record_angle(self, angle):
+        """Ask the user to turn the plate, then record the time series. False if cancelled /
+        stopped."""
+        import input_polar_slm_analysis as analysis
+        import slm_phase_analysis
+        n_frames, level = self.frames.value(), self.level.value()
+        answer = QtWidgets.QMessageBox.question(
+            self, "Quarter-wave plate",
+            f"<b>Turn the quarter-wave plate (before the SLM) to {angle}°.</b><br><br>Then click "
+            f"OK to record {n_frames} frames.",
+            QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+        if answer != QtWidgets.QMessageBox.Ok:
+            return False
+        settings = (n_frames, level)
+        if self.state["run"] is not None and settings != self.state.get("settings"):
+            if self.recorded:
+                answer = QtWidgets.QMessageBox.question(
+                    self, "Settings changed",
+                    f"The angles already recorded used {self.state['settings'][0]} frames and "
+                    f"the SLM flat gray {self.state['settings'][1]}. All the angles must use the "
+                    f"same: start a new run ({n_frames} frames, gray {level}; all the angles to "
+                    f"record again)?", QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+                if answer != QtWidgets.QMessageBox.Ok:
+                    return False
+            self.recorded.clear()
+            self.state["run"] = None
+            self.update_table()
+            self.completeChanged.emit()
+        if self.state["run"] is None:
+            self.state["run"] = datetime.now().strftime("%Y_%m_%d_%H%M%S")
+            self.state["settings"] = settings
+        wavelength = self.state["wavelength_nm"]
+        extra = self.tools["extra_metadata"]()
+        extra["calibration"] = {
+            "name": analysis.NAME, "light_path": self.tools.get("side"), "run": self.state["run"],
+            "qwp_angle_deg": angle, "wavelength_nm": wavelength,
+            "qwp_retardance_waves": slm_phase_analysis.qwp_retardance(wavelength),
+            "frames": n_frames, "slm_flat_level": level}
+        before = self.slm.shown_mask()
+        self.show_flat()
+        try:
+            done, writer, mean = record_frames(self, self.orca, n_frames,
+                                               calibration_folder(analysis.NAME), extra,
+                                               f"Plate {angle}°")
+        finally:
+            if before is not None:
+                self.slm.show_mask(*before)
+        if done < n_frames:
+            remove_acquisition(writer.folder, writer.index)
+            self.result.setText(f"Plate {angle}°: stopped after {done} of {n_frames} frames "
+                                f"(acquisition {writer.index} deleted).")
+            return False
+        replaced = replace_recording(self.recorded, angle, writer.folder, writer.index)
+        self.update_table()
+        self.completeChanged.emit()
+        brightest = int(mean.max())
+        warning = (f" <b style='color:{MISSING_COLOR}'>Saturated pixels (mean max {brightest}): "
+                   f"lower the exposure and record all the angles again.</b>"
+                   if brightest >= SATURATION else f" (mean max {brightest} counts)")
+        again = "" if replaced is None else f" (previous one, {replaced}, deleted)"
+        self.result.setText(f"Plate {angle}°: acquisition {writer.index} in {writer.folder}"
+                            f"{again}.{warning}")
+        return True
+
+
+class InputPolarAnalysisPage(QtWidgets.QWizardPage):
+    """
+    Last step of input_polar_SLM: input_polar_slm_analysis.run on the run just recorded (in a
+    thread), which writes <first>-<last>_input_polar_SLM_<YYYY_MM_DD_HHMMSS>.json / .npz / .png
+    next to it.
+    """
+
+    def __init__(self, record_page, state):
+        super().__init__()
+        import input_polar_slm_analysis as analysis
+        self.setTitle("Polarization reaching the SLM")
+        self.record_page, self.state = record_page, state
+        self.thread, self.outcome, self.message = None, None, ""
+        text = QtWidgets.QLabel(
+            "For each lit Orca pixel: the Stokes vector of the light reaching the SLM from the 9 "
+            "plate angles (mean of the frames), in the frame of the analyzer (polarizer along "
+            "y): azimuth, ellipticity, degree of polarization; for each disk the same frame by "
+            "frame (fluctuations in time) and the intensity drift of each series. Written next "
+            "to the recordings (<code>.json</code> summary, <code>.npz</code> per pixel, "
+            "<code>.png</code>).")
+        text.setWordWrap(True)
+        buttons = QtWidgets.QHBoxLayout()
+        self.analyse_button = QtWidgets.QPushButton("Analyse the recording")
+        self.analyse_button.clicked.connect(self.analyse_last)
+        choose = QtWidgets.QPushButton("Analyse another recording...")
+        choose.clicked.connect(self.choose)
+        self.bin = QtWidgets.QComboBox()
+        for size in (1, 2, 4, 8, 16):
+            self.bin.addItem(f"Orca pixels {size} x {size}", size)
+        self.bin.setCurrentIndex(2)
+        self.bin.setToolTip("Binning of the Orca pixels for the maps (1: each pixel)")
+        self.channels = QtWidgets.QComboBox()
+        for key, label in analysis.CHANNELS.items():
+            self.channels.addItem(label, key)
+        self.zero = QtWidgets.QComboBox()
+        zero, path = analysis.slm_phase_plate_zero()
+        if zero is not None:
+            self.zero.addItem(f"plate zero {zero:+.2f}° (slm_phase {os.path.basename(path)})",
+                              (zero, f"slm_phase {os.path.basename(path)}"))
+        self.zero.addItem("plate zero fitted on this recording (needs elliptical light)", None)
+        self.zero.addItem("plate zero 0°", (0.0, "0 deg"))
+        self.zero.setToolTip("Zero of the quarter-wave plate in its mount: the one fitted by the "
+                             "SLM phase calibration (same mount) by default")
+        for widget in (self.analyse_button, choose, self.bin, self.channels, self.zero):
+            buttons.addWidget(widget)
+        buttons.addStretch()
+        self.result = QtWidgets.QLabel()
+        self.result.setTextFormat(QtCore.Qt.RichText)
+        self.result.setWordWrap(True)
+        self.result.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
+        self.result.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.figure = QtWidgets.QLabel()
+        self.figure.setFixedSize(2 * FIGURE_SIZE, 2 * FIGURE_SIZE)
+        self.figure.setAlignment(QtCore.Qt.AlignCenter)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.result, 1)
+        row.addWidget(self.figure, 0, QtCore.Qt.AlignTop)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(text)
+        layout.addLayout(buttons)
+        layout.addLayout(row, 1)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(200)
+        self.timer.timeout.connect(self.check_thread)
+
+    def initializePage(self):
+        self.analyse_button.setEnabled(bool(self.record_page.recorded))
+
+    def cleanupPage(self):
+        self.timer.stop()
+
+    def analyse_last(self):
+        recorded = self.record_page.recorded
+        if recorded:
+            self.analyse(*max(recorded.values(), key=lambda r: r[1]))
+
+    def choose(self):
+        import input_polar_slm_analysis as analysis
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, f"Any acquisition of an {analysis.NAME} recording", type_folder(analysis.NAME),
+            "Acquisitions (*.json)")
+        if path:
+            folder, name = os.path.split(path)
+            self.analyse(folder, int(name.split("_")[0].split(".")[0]))
+
+    def analyse(self, folder, index):
+        import threading
+        import input_polar_slm_analysis as analysis
+        if self.thread is not None:
+            return
+        self.outcome = None
+        self.message = f"Analysing the recording of acquisition {index} in {folder}..."
+        self.analyse_button.setEnabled(False)
+        self.figure.clear()
+        bin_size, channels = self.bin.currentData(), self.channels.currentData()
+        zero = self.zero.currentData()
+        offset, source = zero if zero is not None else (None, None)
+
+        def say(text):
+            self.message = text
+
+        def work():
+            try:
+                self.outcome = analysis.run(folder, index, bin_size, offset, say, channels, source)
+            except Exception as error:
+                self.outcome = error
+
+        self.thread = threading.Thread(target=work, daemon=True)
+        self.thread.start()
+        self.timer.start()
+
+    def check_thread(self):
+        import input_polar_slm_analysis as analysis
+        if self.thread is None:
+            return
+        if self.thread.is_alive():
+            self.result.setText(self.message)
+            return
+        self.timer.stop()
+        self.thread = None
+        self.analyse_button.setEnabled(bool(self.record_page.recorded))
+        if isinstance(self.outcome, Exception):
+            self.result.setText(f"<b>Analysis failed</b>: {self.outcome}")
+            return
+        path, summary = self.outcome
+        self.result.setText("<br>".join(analysis.summary_lines(summary) + [f"Written: {path}"]))
+        pixmap = QtGui.QPixmap(path.replace(".json", ".png"))
+        if not pixmap.isNull():
+            self.figure.setPixmap(pixmap.scaled(2 * FIGURE_SIZE, 2 * FIGURE_SIZE,
+                                                QtCore.Qt.KeepAspectRatio,
+                                                QtCore.Qt.SmoothTransformation))
+
+
+# ---------------------------------------------------------------- aberrations (DRAFT)
+
+Z_STACK_SETTLE = 0.05  # s at each plane once the piezo is there (as setup_gui)
+SLM_MASK_FOLDER = os.path.join(os.path.expanduser("~"), "Desktop", "SLM_masks")
+
+
+def record_z_stack(parent, camera, piezo, reference, step, down, up, n_frames, folder, extra,
+                   label, slm_mask=None):
+    """
+    Z stack with the objective piezo (closed loop), as the Saving tab of the cameras: n_frames at
+    each plane from reference - down x step to reference + up x step (lowest first), one
+    acquisition of folder (X_frames.csv columns z_plane, z_um; "z_stack" in X.json); the piezo
+    back to the reference at the end. Progress window with Stop. Returns (frames taken, total,
+    writer).
+    """
+    import time
+    planes = [round(reference + k * step, 4) for k in range(-down, up + 1)]
+    if planes[0] < 0 or planes[-1] > piezo.max_travel:
+        raise ValueError(f"Z stack {planes[0]:.3f} to {planes[-1]:.3f} um: outside the piezo "
+                         f"travel (0 to {piezo.max_travel:.0f} um).")
+    total = len(planes) * n_frames
+    extra = dict(extra, z_stack={
+        "reference_um": reference, "step_um": step, "steps_down": down, "steps_up": up,
+        "n_planes": len(planes), "frames_per_plane": n_frames, "positions_um": planes,
+        "order": "lowest to highest plane, all the frames of a plane together",
+        "frames_file_columns": "z_plane (0 = lowest), z_um (piezo position measured when the "
+                               "plane is reached)",
+        "settle_s": Z_STACK_SETTLE, "piezo_after": "back to the reference"})
+    progress = QtWidgets.QProgressDialog(f"{label}...", "Stop", 0, total, parent)
+    progress.setWindowModality(QtCore.Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    plane = {"index": 0, "z": reference}
+
+    def on_frame(done, n, frame):
+        done += plane["index"] * n_frames
+        progress.setValue(done)
+        progress.setLabelText(f"{label}: plane {plane['index'] + 1} / {len(planes)} "
+                              f"(z {plane['z']:.3f} um), frame {done} / {total}")
+        if done % n_frames == 0:
+            camera.display(frame)
+        QtWidgets.QApplication.processEvents()
+        return not progress.wasCanceled()
+
+    def acquire():
+        writer = SequenceWriter(folder, extra, None, 16, index=next_index(folder),
+                                slm_mask=slm_mask, frame_columns={
+                                    "z_plane": lambda: plane["index"],
+                                    "z_um": lambda: f"{plane['z']:.3f}"})
+        with writer:
+            try:
+                for k, z in enumerate(planes):
+                    piezo.set_position(z)
+                    time.sleep(Z_STACK_SETTLE)
+                    plane["index"], plane["z"] = k, piezo.get_position()
+                    camera.device.acquire_sequence(n_frames, None, on_frame, writer)
+                    if progress.wasCanceled() or writer.n_frames < (k + 1) * n_frames:
+                        break
+            finally:
+                piezo.set_position(reference)
+        return writer
+
+    try:
+        writer = camera.run_paused(acquire)
+    finally:
+        progress.close()
+    return writer.n_frames, total, writer
+
+
+def load_mask(path):
+    """Gray mask (uint8, SLM size) of an image or .npy file."""
+    from SLM import load_phase_pattern
+    return np.asarray(load_phase_pattern(path), dtype=np.uint8)
+
+
+def aberrations_steps(panels, tools):
+    prime, piezo = panels["prime"], panels["piezo"]
+    # shared by the pages: z stacks recorded [{"kind", "mask", "folder", "index", "field"}],
+    # correction {half: {noll: m-lambda}} and its phase, first look results
+    state = {"stacks": [], "correction": {}, "correction_phase": None, "first_look": None}
+    return [
+        InstructionPage(
+            "Beads, piezo and SLM",
+            "<b>TetraSpeck beads (200 nm)</b> in glycerol, sparse (isolated beads, defocused "
+            "rings up to ~25 px), excitation on (Lasers panel). <b>Objective piezo</b> connected "
+            "and in <b>closed loop</b> (&micro;m), roughly mid-travel. SLM connected; link "
+            "align_BFP (and slm_phase) in the SLM panel (Calibration...): the masks of this "
+            "window are corrected by the linked calibrations. Beads in focus on the Prime "
+            "(live).",
+            actions=[("Show the Prime", lambda: show_panel(prime)),
+                     ("Start / stop Prime live", lambda: toggle_live(prime)),
+                     ("Show the piezo", lambda: show_panel(piezo))],
+            status=lambda: live_status(prime, "Prime"),
+            confirm="Beads in focus, piezo in closed loop."),
+        AberrationsStacksPage(
+            panels, tools, state, "none", "Z stacks without phase mask",
+            "Flat SLM (gray 0). For each field: <b>focus</b> on the beads, then <b>Record a z "
+            "stack</b> (reference = the piezo position now). Then move the stage to another "
+            "field (beads elsewhere in the field of view) and record again: several fields, so "
+            "that the beads cover the whole field of each channel."),
+        AberrationsFirstLookPage(state),
+        AberrationsStacksPage(
+            panels, tools, state, "masks", "Z stacks with phase masks",
+            "Choose a phase mask (double helix, Airy, tri-spot, bisected pupil...; "
+            "<code>Desktop\\SLM_masks</code>) and record z stacks of one or more fields, then the "
+            "next mask. A known pupil phase added to the unknown aberrations helps the fit "
+            "(phase diversity). The same fields as without mask, if possible."),
+        AberrationsCorrectionPage(panels, state),
+        AberrationsStacksPage(
+            panels, tools, state, "check", "Check: z stacks with the correction",
+            "The correction of the previous step is added to the mask chosen here (none by "
+            "default). Record z stacks of several fields: the common aberrations should be ~0, "
+            "the field-dependent part unchanged."),
+        AberrationsStorePage(state),
+    ]
+
+
+class AberrationsStacksPage(QtWidgets.QWizardPage):
+    """
+    DRAFT. Z stacks of bead fields with the piezo, a mask on the SLM: kind "none" (flat), "masks"
+    (a mask file chosen here) or "check" (the correction of AberrationsCorrectionPage added to the
+    mask chosen). Each saved as one acquisition of CALIBRATION_ROOT/aberrations/YYYY_MM_DD.
+    """
+
+    def __init__(self, panels, tools, state, kind, title, text):
+        import aberrations
+        super().__init__()
+        self.setTitle(title)
+        self.prime, self.piezo, self.slm = panels["prime"], panels["piezo"], panels["slm"]
+        self.tools, self.state, self.kind = tools, state, kind
+        label = QtWidgets.QLabel(text + f"<br>Saved in <code>{saving.CALIBRATION_ROOT}\\"
+                                        f"{aberrations.NAME}\\YYYY_MM_DD</code>.")
+        label.setWordWrap(True)
+        buttons = QtWidgets.QHBoxLayout()
+        for text_, function in (("Show the Prime", lambda: show_panel(self.prime)),
+                                ("Start / stop Prime live", lambda: toggle_live(self.prime))):
+            button = QtWidgets.QPushButton(text_)
+            button.clicked.connect(lambda _, f=function: self.run(f))
+            buttons.addWidget(button)
+        self.exposure = exposure_box(self.prime)
+        buttons.addWidget(self.exposure)
+        buttons.addStretch()
+        defaults = aberrations.Z_STACK_DEFAULTS
+        self.step = QtWidgets.QDoubleSpinBox()
+        self.step.setDecimals(3)
+        self.step.setRange(0.005, 2)
+        self.step.setValue(defaults["step_um"])
+        self.step.setPrefix("step ")
+        self.step.setSuffix(" um")
+        self.down, self.up, self.frames = (QtWidgets.QSpinBox() for _ in range(3))
+        for box, prefix, suffix, value in ((self.down, "down ", " steps", defaults["down"]),
+                                           (self.up, "up ", " steps", defaults["up"]),
+                                           (self.frames, "", " frames per plane",
+                                            defaults["frames"])):
+            box.setRange(0 if box is not self.frames else 1, 1000)
+            box.setValue(value)
+            box.setPrefix(prefix)
+            box.setSuffix(suffix)
+        z_row = QtWidgets.QHBoxLayout()
+        for widget in (self.step, self.down, self.up, self.frames):
+            z_row.addWidget(widget)
+        z_row.addStretch()
+        mask_row = QtWidgets.QHBoxLayout()
+        self.mask = QtWidgets.QComboBox()
+        self.mask.addItem("no mask (flat, gray 0)", None)
+        if kind != "none" and os.path.isdir(SLM_MASK_FOLDER):
+            for name in sorted(os.listdir(SLM_MASK_FOLDER)):
+                if name.lower().endswith((".png", ".bmp", ".tif", ".tiff", ".npy")):
+                    self.mask.addItem(name, os.path.join(SLM_MASK_FOLDER, name))
+        self.mask.setEnabled(kind != "none")
+        self.linked = QtWidgets.QCheckBox("corrected by the calibrations linked in the SLM panel")
+        self.linked.setChecked(True)
+        mask_row.addWidget(QtWidgets.QLabel("SLM mask"))
+        mask_row.addWidget(self.mask, 1)
+        mask_row.addWidget(self.linked)
+        record = QtWidgets.QPushButton("Record a z stack of this field")
+        record.clicked.connect(lambda: self.run(self.record))
+        record_row = QtWidgets.QHBoxLayout()
+        record_row.addWidget(record)
+        record_row.addStretch()
+        self.status = QtWidgets.QLabel()
+        self.list = QtWidgets.QListWidget()
+        layout = QtWidgets.QVBoxLayout(self)
+        for item in (label, buttons, z_row, mask_row, record_row, self.status, self.list):
+            (layout.addLayout if isinstance(item, QtWidgets.QLayout) else layout.addWidget)(item)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(DEVICE_CHECK_PERIOD)
+        self.timer.timeout.connect(self.update_status)
+
+    def initializePage(self):
+        self.update_status()
+        self.timer.start()
+
+    def cleanupPage(self):
+        self.timer.stop()
+
+    def validatePage(self):
+        self.timer.stop()
+        return True
+
+    def isComplete(self):
+        return self.kind != "none" or any(s["kind"] == "none" for s in self.state["stacks"])
+
+    def update_status(self):
+        text, color = live_status(self.prime, "Prime")
+        piezo = self.piezo.device
+        try:
+            where = (f"piezo {piezo.get_position():.3f} um (reference)"
+                     if piezo is not None and piezo.is_closed_loop()
+                     else "piezo not connected or in open loop")
+        except Exception as error:
+            where = f"piezo: {error}"
+        self.status.setText(f"{text}; {where}")
+        self.status.setStyleSheet(f"color: {color}; font-weight: bold")
+        self.exposure.sync()
+
+    def run(self, function):
+        try:
+            function()
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, "Error", str(error))
+        self.update_status()
+
+    def pattern(self):
+        """(gray mask, name) to show: the chosen mask (or flat 0), + the correction (check)."""
+        import aberrations
+        path = self.mask.currentData()
+        mask = flat_mask(0) if path is None else load_mask(path)
+        name = "flat_0" if path is None else os.path.splitext(os.path.basename(path))[0]
+        if self.kind == "check":
+            if self.state["correction_phase"] is None:
+                raise ValueError("No correction yet: set it in the correction step.")
+            mask = aberrations.add_to_mask(mask, self.state["correction_phase"])
+            name += "+correction"
+        if self.linked.isChecked() and self.slm.links:
+            mask = correct_mask(mask, self.slm.links)
+        return mask, name
+
+    def record(self):
+        import aberrations
+        piezo = self.piezo.device
+        if piezo is None or not piezo.is_closed_loop():
+            raise ValueError("Connect the objective piezo and put it in closed loop (um).")
+        mask, name = self.pattern()
+        same = [s for s in self.state["stacks"] if s["kind"] == self.kind]
+        field_number = len(same) + 1
+        extra = self.tools["extra_metadata"]()
+        extra["calibration"] = {
+            "name": aberrations.NAME, "light_path": self.tools.get("side"), "kind": self.kind,
+            "slm_mask": name, "slm_mask_file": self.mask.currentData(),
+            "linked_calibrations_applied": sorted(self.slm.links) if self.linked.isChecked()
+            else [], "correction_mlambda": self.state["correction"] if self.kind == "check"
+            else None, "field": field_number}
+        before = self.slm.shown_mask()
+        self.slm.show_mask(mask, name)
+        try:
+            done, total, writer = record_z_stack(
+                self, self.prime, piezo, piezo.get_position(), self.step.value(),
+                self.down.value(), self.up.value(), self.frames.value(),
+                calibration_folder(aberrations.NAME), extra, f"Z stack {name}",
+                slm_mask=self.slm.shown_mask)
+        finally:
+            if before is not None:
+                self.slm.show_mask(*before)
+        if done < total:
+            self.list.addItem(f"{name}: stopped after {done} of {total} frames (acquisition "
+                              f"{writer.index}, not used)")
+            return
+        self.state["stacks"].append({"kind": self.kind, "mask": name, "folder": writer.folder,
+                                     "index": writer.index, "field": field_number})
+        self.list.addItem(f"field {field_number}, mask {name}: acquisition {writer.index} "
+                          f"({total} frames)")
+        self.completeChanged.emit()
+
+
+class AberrationsFirstLookPage(QtWidgets.QWizardPage):
+    """DRAFT. Model-free first look of the stacks without mask (aberrations.run_first_look, in a
+    thread); the fit is to come."""
+
+    def __init__(self, state):
+        super().__init__()
+        self.setTitle("First look (no model) - the fit is to come")
+        self.state = state
+        self.thread, self.outcome = None, None
+        text = QtWidgets.QLabel(
+            "Per channel and bead, from the second moments (no PSF model): widths along x and y "
+            "vs z, best focus, astigmatism (focus x - focus y), asymmetry above / below the focus "
+            "(spherical), and their gradients over the field. <b>The fit of the aberrations "
+            "(Zernike per bead, then their field model) is not written yet</b>: to be discussed "
+            "(pytorch here, or jax in WSL).")
+        text.setWordWrap(True)
+        self.button = QtWidgets.QPushButton("First look at the stacks without mask")
+        self.button.clicked.connect(self.analyse)
+        self.result = QtWidgets.QLabel()
+        self.result.setWordWrap(True)
+        self.result.setTextFormat(QtCore.Qt.RichText)
+        self.result.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.button)
+        row.addStretch()
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(text)
+        layout.addLayout(row)
+        layout.addWidget(self.result, 1)
+        self.timer = QtCore.QTimer(self)
+        self.timer.setInterval(200)
+        self.timer.timeout.connect(self.check_thread)
+
+    def cleanupPage(self):
+        self.timer.stop()
+
+    def analyse(self):
+        import threading
+        import aberrations
+        stacks = [(s["folder"], s["index"]) for s in self.state["stacks"] if s["kind"] == "none"]
+        if not stacks or self.thread is not None:
+            return
+        self.button.setEnabled(False)
+        self.result.setText(f"Analysing {len(stacks)} z stacks...")
+
+        def work():
+            try:
+                self.outcome = aberrations.run_first_look(stacks)
+            except Exception as error:
+                self.outcome = error
+
+        self.thread = threading.Thread(target=work, daemon=True)
+        self.thread.start()
+        self.timer.start()
+
+    def check_thread(self):
+        if self.thread is None or self.thread.is_alive():
+            return
+        self.timer.stop()
+        self.thread = None
+        self.button.setEnabled(True)
+        if isinstance(self.outcome, Exception):
+            self.result.setText(f"<b>Analysis failed</b>: {self.outcome}")
+            return
+        path, results, lines = self.outcome
+        self.state["first_look"] = path
+        self.result.setText("<br>".join(lines + [f"Written: {path}"]))
+
+
+class AberrationsCorrectionPage(QtWidgets.QWizardPage):
+    """
+    DRAFT. Correction of the common aberrations: Zernike (m-lambda) per SLM half, entered by hand
+    for now (later: the common part of the field model of the fit), shown on the SLM as minus
+    the wavefront in the pupil of each half (radius of align_BFP). Also for the sign /
+    orientation test: one known mode at a time, measured by the stacks.
+    """
+
+    MODES = {4: "Z4 defocus", 5: "Z5 astigmatism 45°", 6: "Z6 astigmatism 0°",
+             7: "Z7 coma y", 8: "Z8 coma x", 9: "Z9 trefoil", 10: "Z10 trefoil",
+             11: "Z11 spherical"}
+
+    def __init__(self, panels, state):
+        import aberrations
+        super().__init__()
+        self.setTitle("Correction of the common aberrations (SLM)")
+        self.slm, self.state = panels["slm"], state
+        self.radius, self.radius_file = aberrations.bfp_radius()
+        text = QtWidgets.QLabel(
+            "Aberrations to cancel, in m&lambda; rms (Noll), for each SLM half (= each channel). "
+            "<b>For now entered by hand</b> (the fit will give the common part of each mode). "
+            "The SLM shows minus this wavefront in the BFP of each half, about the nominal "
+            "centre (moved onto the measured BFP by align_BFP if linked). To check the sign and "
+            "the orientation first: one mode at a time (e.g. +50 m&lambda; of Z6), then a z "
+            f"stack. BFP radius: {'unknown' if self.radius is None else f'{self.radius:.1f}'} "
+            f"SLM px (align_BFP{'' if self.radius_file is None else ' ' + os.path.basename(self.radius_file)}).")
+        text.setWordWrap(True)
+        self.table = QtWidgets.QTableWidget(len(self.MODES), 2)
+        self.table.setHorizontalHeaderLabels(["SLM half 0 (left)", "SLM half 1 (right)"])
+        self.table.setVerticalHeaderLabels(list(self.MODES.values()))
+        for row in range(len(self.MODES)):
+            for col in range(2):
+                self.table.setItem(row, col, QtWidgets.QTableWidgetItem("0"))
+        show = QtWidgets.QPushButton("Show the correction on the SLM")
+        show.clicked.connect(self.show_correction)
+        self.result = QtWidgets.QLabel()
+        self.result.setWordWrap(True)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(show)
+        row.addStretch()
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(text)
+        layout.addWidget(self.table)
+        layout.addLayout(row)
+        layout.addWidget(self.result)
+
+    def coefficients(self):
+        out = {}
+        for col in range(2):
+            modes = {}
+            for row, j in enumerate(self.MODES):
+                value = float(self.table.item(row, col).text().replace(",", ".") or 0)
+                if value:
+                    modes[j] = value
+            if modes:
+                out[col] = modes
+        return out
+
+    def show_correction(self):
+        import aberrations
+        try:
+            if self.radius is None:
+                raise ValueError("No align_BFP result: the BFP radius on the SLM is unknown.")
+            coefficients = self.coefficients()
+            phase = aberrations.correction_phase(coefficients, self.radius)
+            self.state["correction"] = coefficients
+            self.state["correction_phase"] = phase
+            mask = aberrations.add_to_mask(flat_mask(0), phase)
+            if self.slm.links:
+                mask = correct_mask(mask, self.slm.links)
+            self.slm.show_mask(mask, "aberration_correction")
+            self.result.setText(f"On the SLM: correction {coefficients or 'none (all 0)'}"
+                                f"{' (corrected by the linked calibrations)' if self.slm.links else ''}.")
+        except Exception as error:
+            QtWidgets.QMessageBox.critical(self, "Error", str(error))
+
+
+class AberrationsStorePage(QtWidgets.QWizardPage):
+    """DRAFT. Writes what this window has (recordings, first look, correction applied, check);
+    the zero-mean field model of each mode will be added once the fit exists."""
+
+    def __init__(self, state):
+        super().__init__()
+        self.setTitle("Calibration file (draft)")
+        self.state = state
+        text = QtWidgets.QLabel(
+            "Will store: the correction applied (common Zernike per channel / SLM half) and the "
+            "<b>zero-mean field-dependent aberrations</b> of each mode per channel (polynomial of "
+            "the position in the channel frame), with the check. <b>For now</b> (no fit yet): the "
+            "recordings, the first look file and the correction applied, in "
+            "<code>X_aberrations_calibration_&lt;date_time&gt;.json</code> next to the first "
+            "stack.")
+        text.setWordWrap(True)
+        button = QtWidgets.QPushButton("Write the calibration file")
+        button.clicked.connect(self.write)
+        self.result = QtWidgets.QLabel()
+        self.result.setWordWrap(True)
+        self.result.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(button)
+        row.addStretch()
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(text)
+        layout.addLayout(row)
+        layout.addWidget(self.result)
+        layout.addStretch()
+
+    def write(self):
+        import json
+        import aberrations
+        stacks = self.state["stacks"]
+        if not stacks:
+            self.result.setText("No z stack recorded.")
+            return
+        now = datetime.now()
+        path = os.path.join(stacks[0]["folder"], f"{stacks[0]['index']}_{aberrations.NAME}_"
+                                                 f"calibration_{now:%Y_%m_%d_%H%M%S}.json")
+        with open(path, "w") as f:
+            json.dump({"type": "aberrations_calibration", "status": "draft (no fit yet)",
+                       "date": now.isoformat(timespec="seconds"), "stacks": stacks,
+                       "first_look": self.state["first_look"],
+                       "correction_mlambda": {str(k): v for k, v in
+                                              self.state["correction"].items()},
+                       "field_dependent": None,
+                       "notes": "Zernike Noll, rms m-lambda; correction = minus the wavefront "
+                                "in each SLM half (key = half)."}, f, indent=1)
+        self.result.setText(f"Written: {path}")
+
+
 ALIGN_BFP = Calibration(
     name="align_BFP",
     title="Align BFP",
@@ -1033,8 +2262,51 @@ SLM_PHASE = Calibration(
     steps=slm_phase_steps,
 )
 
-CALIBRATIONS = [ALIGN_BFP, SLM_PHASE]
+CHANNELS_GEOMETRY = Calibration(
+    name="channels_geometry",
+    title="Channels geometry",
+    description="Correspondence between the two channels of the Prime (top = reference, x right "
+                "y up; bottom, x right y down): vector field and rotation, from a white lamp "
+                "image and TetraSpeck bead images. A mapping only: no image is corrected.",
+    requirements=["The two channels on the Prime (top and bottom), the detection path as for the "
+                  "experiments."],
+    devices=["microscope", "filter_wheels", "prime"],
+    side="Left",
+    steps=channels_geometry_steps,
+)
 
+INPUT_POLAR_SLM = Calibration(
+    name="input_polar_SLM",
+    title="Input polar SLM",
+    description="Polarization of the light reaching the SLM (both channels, per Orca pixel of the "
+                "BFPs) and its stability in time: the analyzer right before the SLM, a time "
+                "series for each of the 9 angles of its quarter-wave plate (turned by hand).",
+    requirements=["NO half-wave plate in the beam before the SLM.",
+                  "The analyzer (the quarter-wave plate in its rotation mount, then the "
+                  "polarizer) right before the SLM.",
+                  "No analyzer before the Orca camera.",
+                  "The 50/50 beam splitter in the beam."],
+    devices=["microscope", "filter_wheels", "prime", "orca", "slm"],
+    side="Left",
+    steps=input_polar_steps,
+)
+
+ABERRATIONS = Calibration(
+    name="aberrations",
+    title="Aberrations (draft)",
+    description="DRAFT. Field-dependent aberrations from z stacks of 200 nm TetraSpeck beads "
+                "(piezo), without and with phase masks on the SLM; the common part corrected by "
+                "an SLM mask and checked; the zero-mean field-dependent part stored. The fit is "
+                "not written yet.",
+    requirements=["The detection path as for the experiments (two channels on the Prime, SLM "
+                  "in the path, no analyzer).",
+                  "TetraSpeck beads 200 nm in glycerol, sparse."],
+    devices=["microscope", "filter_wheels", "prime", "piezo", "slm"],
+    side="Left",
+    steps=aberrations_steps,
+)
+
+CALIBRATIONS = [ALIGN_BFP, SLM_PHASE, CHANNELS_GEOMETRY, INPUT_POLAR_SLM, ABERRATIONS]
 
 # ---------------------------------------------------------------- calibrations linked to the masks
 

@@ -92,6 +92,7 @@
 <ul>
   <li>SLM top left;</li>
   <li>the microscope below it, with the piezo next to it and the filter wheels under the piezo;</li>
+  <li>the lasers under them, full width (laser lines on the left, galvos on the right);</li>
   <li>the three cameras in tabs on the right.</li>
 </ul>
 
@@ -132,6 +133,7 @@
   <li><b>Auto contrast</b>: the contrast follows each new image. Otherwise set it with the histogram on the right of the image, by dragging its ends.</li>
   <li>Under the image: size, minimum, maximum and mean of the last image.</li>
   <li><b>Temperature (Prime)</b>: box in the top-left corner of the image, read every 2 s. During the live or a sequence it shows the value from before, because reading it would stop the acquisition. &ldquo;last image&rdquo; is the value saved with the last snap or sequence.</li>
+  <li><b>Focus</b>: box in the top-right corner of the image (all cameras), the focus position of the microscope as in the Microscope panel, updated every 0.5 s while the microscope is connected. Handy to search the focus while watching the live.</li>
   <li>Orca: cooler status at the top right. The FLIR gives no temperature.</li>
 </ul>
 <h3>Settings tab</h3>
@@ -139,7 +141,7 @@
   <tr><th>Setting</th><th>Use</th></tr>
   <tr><td>Exposure</td><td>In ms. Applied when you leave the field (Enter or Tab).</td></tr>
   <tr><td>Binning</td><td>Applied immediately.</td></tr>
-  <tr><td>Readout</td><td>Prime: port / speed / gain indexes + <b>Apply readout</b>. Valid combinations: speed 0 with gain 1 (full well), 2 (balanced) or 3 (sensitivity); or speed 1 with gain 1 (HDR, 16 bit).<br>Orca: fast (standard) / slow (low noise).<br>FLIR: gain in dB (automatic gain off).</td></tr>
+  <tr><td>Readout</td><td>Prime: port / speed / gain indexes + <b>Apply readout</b>. Valid combinations: speed 0 with gain 1 (full well), 2 (balanced) or 3 (sensitivity); or speed 1 with gain 1 (HDR, 16 bit). <b>fan</b>: High / Medium / Low, applied at once; lower = less vibration but less cooling (watch the sensor temperature); saved in the metadata (<code>fan_speed</code>). <b>target T</b>: &minus;15 / &minus;20 / &minus;25 &deg;C, the sensor setpoint (kept by the camera when closed; it takes a few minutes to get there: watch the temperature; saved as <code>temperature_setpoint_C</code>).<br>Orca: fast (standard) / slow (low noise).<br>FLIR: gain in dB (automatic gain off).</td></tr>
   <tr><td>ROI x, y, w, h</td><td><b>Apply ROI</b>. <b>Full frame</b> goes back to the whole sensor and binning 1. The Orca rounds the ROI to 4 pixels.</td></tr>
   <tr><td>Select on image</td><td>A yellow rectangle appears on the image. Move it, and resize it with its corner handle; x, y, w, h follow, in full-sensor pixels. Then <b>Apply ROI</b>.</td></tr>
   <tr><td>Advanced settings&hellip;</td><td>All the parameters of the camera, with their value, range, whether they can be changed, and a short description. The search box searches names and descriptions; there are &ldquo;Adjustable only&rdquo; and &ldquo;Changed only&rdquo; filters. A choice, or Enter in a value field, applies it at once; the live is paused meanwhile. Closing the window does <b>not</b> undo a change. Prime only, see below: default, highlighting and Reset.</td></tr>
@@ -154,7 +156,8 @@
   <tr><th>Field</th><th>Use</th></tr>
   <tr><td>Folder</td><td>Destination (section 4), next acquisition number, and whether sequences go through the fast disk.</td></tr>
   <tr><td>Pixels</td><td><b>16 bit</b>: 2 bytes per pixel, as acquired.<br><b>8 bit</b>: half the size, but only the 8 highest bits of the camera value are kept; faint signals become coarse. The camera value is about saved value &times; 2<sup>saved_value_shift</sup> (in the metadata). The live is not changed.</td></tr>
-  <tr><td>Frames</td><td>Number of frames of a sequence, up to 10 million. The size of one frame and of the sequence is shown next to it.</td></tr>
+  <tr><td>Frames</td><td>Number of frames of a sequence, up to 10 million (per plane for a z stack). The size of one frame and of the sequence is shown next to it.</td></tr>
+  <tr><td>Z stack</td><td>Tick <b>Z stack (objective piezo)</b> to take the sequence at several planes. <b>Reference</b>: the plane where the focus is (set to the piezo position when ticked; <b>Current position</b> takes it again). <b>Step</b> (&micro;m), <b>down</b> and <b>up</b> (number of steps below and above). <b>Acquire and save sequence</b> then takes <i>Frames</i> at each plane, from the lowest (reference &minus; down &times; step) to the highest (reference + up &times; step), in one acquisition, and puts the piezo back to the reference at the end (also after Stop or an error). The piezo must be connected and in <b>closed loop</b>. A stack over more than 20 &micro;m asks first. The plane of each frame is in <code>X_frames.csv</code> (columns <code>z_plane</code>, 0 = lowest, and <code>z_um</code>, measured), the stack settings in <code>z_stack</code> of the .json.</td></tr>
   <tr><td>Save last image</td><td>Saves the last snap (or the last frame of the last sequence) as the next acquisition.</td></tr>
   <tr><td>Acquire and save sequence</td><td>Acquires the frames and writes them to disk as they arrive (section 6).</td></tr>
 </table>
@@ -281,6 +284,44 @@ For long runs, lock the focus (Perfect Focus) and let the setup stabilise first:
 <figure class="half"><img src="img/slm_phase_record.png" alt="SLM phase step 6"><figcaption>Step 6 after the 9 angles, gray step 4 (simulated Orca and SLM, one disk).</figcaption></figure>
 <figure><img src="img/slm_phase_analysis.png" alt="SLM phase step 7"><figcaption>Step 7 on the simulated recording: same curve for both disks, 2&pi; at gray 227.</figcaption></figure>
 
+<h3>Channels geometry (<code>channels_geometry</code>)</h3>
+<p>Goal: the correspondence between the two channels of the Prime, <b>top = reference</b> (x to the right, y up) and <b>bottom</b> (x to the right, y down): a vector field and a rotation, plus the normalization of the channels from the white lamp. A mapping only: no image is corrected. <span style="color:#d32f2f"><b>Left path (red).</b></span></p>
+<table>
+  <tr><th>Step</th><th>What to do</th></tr>
+  <tr><td>1&ndash;3</td><td>Optical elements, devices (microscope, filter wheels, Prime), left light path and emission filter.</td></tr>
+  <tr><td>4. White lamp</td><td>Switch the <b>white transmitted lamp</b> on by hand (Bumblebee opens no shutter), nothing in focus, both channels lit and not saturated (Prime live, <b>exposure</b> box). <b>Record the lamp</b> (10 frames by default). The two channels are found at once: edges, centres, the row where the image is cut in 2, the <b>normalization</b> bottom / top, and the <b>frame</b>: the rotation of the top rectangle on the camera (its edges), which gives the x, y axes of the channels.</td></tr>
+  <tr><td>5. Beads</td><td>Lamp off. <b>TetraSpeck beads (size 4)</b> in focus, excitation on (Lasers panel). <b>Record this field</b> (20 frames by default); move the stage and record more fields for more beads. The beads found in each channel are counted.</td></tr>
+  <tr><td>6. Mapping</td><td><b>Analyse</b>: the beads are fitted and paired; the mapping top &rarr; bottom, in the frame of the top rectangle, is a rotation + scales + shift, plus a smooth residual field. Stored: the <b>frame rotation</b> (top rectangle on the camera) and the <b>rotation of the bottom channel wrt the top</b>, with its deformation (scales, shear, field). Shown: both rotations, normalization, number of pairs, mean vector, scales, local rotation, residuals; the figure shows the frame axes and the deformation of the bottom channel (translation and rotation removed). Written next to the first bead field: <code>X_channels_geometry_&lt;date_time&gt;.json</code> and <code>.png</code>, in <code>D:\BUMBLEBEE_calibration\channels_geometry\YYYY_MM_DD</code>.</td></tr>
+</table>
+<p>The smooth residual field is kept only if it predicts better the beads left out (each field predicted by the others); otherwise the mapping is affine. The errors of the beads left out are drawn in <code>X_channels_geometry_&lt;date_time&gt;_check.png</code> (map of the errors and histogram).</p>
+<p><b>7. Check on new beads (optional)</b>, as <code>check_calib</code> of Juliette's reconstruction: move to a <b>new field</b> of beads and click <b>Record and check</b>. Each top bead is mapped to the bottom channel and compared with the bead measured there: error rms, median, 95 %, std, interquartile, mean vector, a map of the errors and their histogram (<code>X_channels_geometry_check_&lt;date_time&gt;.json</code> and <code>.png</code>).</p>
+<figure><img src="img/channels_geometry_analysis.png" alt="Channels geometry step 6"><figcaption>Step 6 with a simulated Prime (2 fields, rotation &minus;0.4&deg; found exactly).</figcaption></figure>
+
+<h3>Input polar SLM (<code>input_polar_SLM</code>)</h3>
+<p>Goal: the polarization of the light reaching the SLM, at every Orca pixel of the BFPs (both channels), and how stable it is in time. <span style="color:#d32f2f"><b>Left path (red).</b></span> The analyzer (<b>quarter-wave plate in its rotation mount, then the polarizer</b>) is put <b>right before the SLM</b>, with <b>no half-wave plate</b> in the beam; nothing analyses the polarization before the Orca. Recording an angle again replaces the previous recording of that angle (its files are deleted); a recording stopped before the end is deleted too. Same in SLM phase.</p>
+<table>
+  <tr><th>Step</th><th>What to do</th></tr>
+  <tr><td>1&ndash;3</td><td>Optical elements, devices (microscope, filter wheels, Prime, Orca, SLM), left light path and emission filter.</td></tr>
+  <tr><td>4. Wavelength</td><td>As for SLM phase: it gives the retardance of the quarter-wave plate.</td></tr>
+  <tr><td>5. Beads in focus on the Prime</td><td>TetraSpeck beads (size 1) in focus, excitation on.</td></tr>
+  <tr><td>6. Time series</td><td>Check on the Orca live (<b>exposure</b> box) that the disks are not saturated at a few plate angles. Set the <b>frames per angle</b> (default 20) and the <b>SLM flat gray</b> (default 0; the SLM is after the analyzer, so it does not change the measurement). <b>Record the remaining angles</b>: for each angle (0, 40&hellip; 320&deg;) a window says <b>&ldquo;Turn the quarter-wave plate (before the SLM) to X&deg;&rdquo;</b>; turn it by hand and click OK: the Orca records the time series. Frames and gray must stay the same for all angles. <b>Record the selected angle again</b> replaces one angle. Saved in <code>D:\BUMBLEBEE_calibration\input_polar_SLM\YYYY_MM_DD</code>.</td></tr>
+  <tr><td>7. Polarization reaching the SLM</td><td><b>Analyse the recording</b>. The plate zero is by default the one measured by the newest SLM phase calibration (same plate and mount); it can also be fitted on this recording (only reliable if the light is clearly elliptical) or set to 0. Shown for each disk: <b>azimuth</b>, <b>ellipticity</b> and <b>degree of polarization</b> (in the frame of the analyzer), their spread over the disk, their fluctuation in time (frame by frame) and the largest intensity drift within a series. Written next to the recordings: <code>.json</code>, <code>.npz</code> (every pixel), <code>.png</code> (maps of each pixel minus its disk value, polarization vs frame).</td></tr>
+</table>
+<p>A slow change of the light between the angles (bleaching, laser) cannot be told apart from the polarization: keep the series short, and record the 0&deg; angle again at the end if in doubt.</p>
+
+<h3>Aberrations (<code>aberrations</code>, draft)</h3>
+<p><b>Draft: the fit of the aberrations is not written yet.</b> Goal: the aberrations of each channel and how they change across the field, from z stacks of <b>TetraSpeck beads (200 nm)</b>; their common part is corrected by a phase mask on the SLM and checked; the zero-mean field-dependent part is stored. <span style="color:#d32f2f"><b>Left path (red).</b></span> Needs the objective piezo in closed loop, and align_BFP linked in the SLM panel.</p>
+<table>
+  <tr><th>Step</th><th>What to do</th></tr>
+  <tr><td>4. Beads, piezo and SLM</td><td>Sparse beads in focus on the Prime, piezo in closed loop, align_BFP (and SLM phase) linked in the SLM panel.</td></tr>
+  <tr><td>5. Z stacks without phase mask</td><td>Focus, then <b>Record a z stack of this field</b> (reference = the piezo position; step 0.1 &micro;m, 15 down, 15 up, 5 frames per plane by default). Move the stage and repeat for several fields.</td></tr>
+  <tr><td>6. First look</td><td>Without a PSF model: per channel, best focus, width at focus, astigmatism (focus x &minus; focus y), asymmetry above / below the focus, and their gradients across the field.</td></tr>
+  <tr><td>7. Z stacks with phase masks</td><td>Choose a mask (double helix, Airy, tri-spot&hellip;) and record z stacks, then the next mask.</td></tr>
+  <tr><td>8. Correction</td><td>Zernike Z4&ndash;Z11 (m&lambda;) per SLM half, entered by hand for now; <b>Show the correction on the SLM</b>. First check the sign and orientation with one mode at a time.</td></tr>
+  <tr><td>9. Check</td><td>Z stacks with the correction on the SLM.</td></tr>
+  <tr><td>10. Calibration file</td><td>For now: the recordings, the first look and the correction applied.</td></tr>
+</table>
+
 <h2 class="new">12. Lasers and galvos (iLas2)</h2>
 <p>Bumblebee replaces Modular and MetaMorph for the laser powers and the galvos (tested 03/11/2026 with the 561 nm). <b>Close Modular and MetaMorph first</b>: only one program can drive the galvo card. Switch the laser emission on in the Oxxius software as usual; Bumblebee sets the power of each line.</p>
 <ul>
@@ -376,9 +417,17 @@ mask_0 = np.array(Image.open("3_slm_masks/0.png"))</code></pre></li>
 <h2>16. Version history</h2>
 <table>
   <tr><th>Date</th><th>Changes</th></tr>
+  <tr><td>04/11/2026</td><td>
+    <ul>
+      <li>New calibration <b>Input polar SLM</b>: polarization reaching the SLM (analyzer right before it, time series for each of the 9 plate angles); not tested on the setup yet.</li>
+      <li>Draft calibration <b>Aberrations</b>: z stacks of beads with and without phase masks, first look without model, correction on the SLM by hand; the fit is to come.</li>
+      <li>Focus position of the microscope shown in the top-right corner of the camera images.</li>
+      <li><b>Z stack</b> with the objective piezo in the Saving tab of the cameras (reference, step, steps down and up; lowest to highest plane); not tested on the setup yet.</li>
+    </ul></td></tr>
   <tr><td>03/11/2026</td><td>
     <ul>
       <li>Lasers and galvos (iLas2) tested with the 561 nm: power, fixed beam and 360&deg; circle as Modular.</li>
+      <li>New calibration <b>Channels geometry</b>: mapping between the two channels of the Prime (vector field, rotation) and lamp normalization; not tested on the Prime yet.</li>
       <li>Angles in degrees (Modular's formula and galvo calibrations, one per line); lines in <code>ilas_config.json</code> (up to 6); Calibration button (to come).</li>
     </ul></td></tr>
   <tr><td>02/11/2026</td><td>

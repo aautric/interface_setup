@@ -66,6 +66,8 @@ class Camera:
         self.roi = None  # (x, y, width, height), None = full frame
         self.last_metadata = None  # metadata of the last snap / sequence
         self._temperature = None  # last temperature read (see temperature)
+        self._fan_speed = None  # last fan speed read or set (see fan_speed)
+        self._temperature_setpoint = None  # last setpoint read or set (see temperature_setpoint)
         self._sequence_running = False
         self._defaults = {}  # adjustable parameters as read at connection (advanced settings)
 
@@ -177,6 +179,59 @@ class Camera:
             self.cam.speed = speed
         if gain is not None:
             self.cam.gain = gain
+
+    def fan_speeds(self):
+        """Names of the fan speeds of the camera (PVCAM FAN_SPEED_SETPOINT), [] if none."""
+        pid = const.PARAM_FAN_SPEED_SETPOINT
+        if not self.cam.check_param(pid):
+            return []
+        return [name for name, _ in sorted(self.cam.read_enum(pid).items(), key=lambda i: i[1])]
+
+    @property
+    def fan_speed(self):
+        """Fan speed (name), None if the camera has no fan setting. Read from the camera outside
+        the live / a sequence only (as the temperature), else the last value read or set."""
+        pid = const.PARAM_FAN_SPEED_SETPOINT
+        if not (self.live or self._sequence_running):
+            if not self.cam.check_param(pid):
+                return None
+            value = self.cam.get_param(pid)
+            self._fan_speed = {v: k for k, v in self.cam.read_enum(pid).items()}.get(value, value)
+        return self._fan_speed
+
+    def set_fan_speed(self, name):
+        """Set the fan speed by name (one of fan_speeds()). Lower = less vibration, less cooling:
+        watch the sensor temperature."""
+        self.set_parameter("FAN_SPEED_SETPOINT", name)
+        self._fan_speed = name
+
+    def temperature_setpoint_range(self):
+        """(min, max) of the sensor temperature setpoint (°C), None if not supported."""
+        pid = const.PARAM_TEMP_SETPOINT
+        if not self.cam.check_param(pid):
+            return None
+        return (self.cam.get_param(pid, const.ATTR_MIN) / 100,
+                self.cam.get_param(pid, const.ATTR_MAX) / 100)
+
+    @property
+    def temperature_setpoint(self):
+        """Target sensor temperature (°C; PVCAM TEMP_SETPOINT in 1/100 °C), None if not
+        supported. Read outside the live / a sequence only, else the last value read or set."""
+        pid = const.PARAM_TEMP_SETPOINT
+        if not (self.live or self._sequence_running):
+            if not self.cam.check_param(pid):
+                return None
+            self._temperature_setpoint = self.cam.get_param(pid) / 100
+        return self._temperature_setpoint
+
+    def set_temperature_setpoint(self, celsius):
+        """Set the target sensor temperature (°C). The camera keeps it when closed; it is set back
+        to -15 °C by reset_parameters."""
+        low, high = self.temperature_setpoint_range()
+        if not low <= celsius <= high:
+            raise ValueError(f"Temperature setpoint {celsius} °C out of range ({low} to {high} °C).")
+        self.cam.set_param(const.PARAM_TEMP_SETPOINT, int(round(celsius * 100)))
+        self._temperature_setpoint = round(celsius * 100) / 100
 
     # ---------- all parameters (advanced settings) ----------
 
@@ -416,6 +471,8 @@ class Camera:
             "exposure_mode": _read(self.cam, "exp_mode"),
             "clear_mode": _read(self.cam, "clear_mode"),
             "temperature_C": self.temperature,
+            "temperature_setpoint_C": _read(self, "temperature_setpoint"),
+            "fan_speed": _read(self, "fan_speed"),
             "advanced": self.get_advanced_metadata(),
         }
 

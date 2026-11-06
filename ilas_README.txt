@@ -72,8 +72,8 @@ cabling; channels 1-4 are used by 405, 640, 561, 488 as in Modular, which calls 
 642); calibration = the
 name of its galvo calibration. Restart Bumblebee.
 
-Bumblebee panel "Lasers (iLas)" (tabbed with the objective piezo)
------------------------------------------------------------------
+Bumblebee panel "Lasers (iLas)" (under the microscope, piezo and filter wheels)
+-------------------------------------------------------------------------------
 Connect (asks for confirmation; the lasers stay at power 0), the big Laser ON / OFF button
 (red when on), one row per line (tick = used when on, power in %, channel and calibration in
 grey), galvos: mode (fixed beam: angle + direction; 360 deg circle: half angle; fixed beam:
